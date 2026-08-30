@@ -15,13 +15,22 @@ import Login from './components/Login';
 import AiFab from './components/AiFab';
 import FileGallery from './components/FileGallery';
 import PendenciesTab from './components/PendenciesTab';
+import Users from './components/Users';
+import SetAccess from './components/SetAccess';
 import { DEFAULT_USER_SETTINGS, MOCK_DOCUMENTS } from './constants';
 import { UserSettings, Document, UploadedFile } from './types';
-import { api } from './services/api';
+import { api, auth } from './services/api';
+import { Agent, canSeePage, firstAllowedPage } from './utils/perms';
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [activePage, setActivePage] = useState('kanban');
+  // Página pública de ativação de convite — fora do fluxo autenticado.
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/definir-acesso')) {
+    return <SetAccess />;
+  }
+
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!auth.getToken());
+  const [agent, setAgent] = useState<Agent | null>(() => auth.getAgent());
+  const [activePage, setActivePage] = useState(() => firstAllowedPage(auth.getAgent()));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   // Inicia sempre com os padrões completos
@@ -29,11 +38,12 @@ const App: React.FC = () => {
   const [documents, setDocuments] = useState<Document[]>(MOCK_DOCUMENTS);
   const [uploadPreFill, setUploadPreFill] = useState<{companyId: number, competence: string} | null>(null);
 
+  // Revalida a sessão no load (pega revogação/expiração feita enquanto o app estava fechado).
   useEffect(() => {
-    const token = localStorage.getItem('cm_auth_token');
-    if (token) {
-        setIsAuthenticated(true);
-    }
+    if (!auth.getToken()) return;
+    api.me()
+      .then((me: Agent) => { setAgent(me); setIsAuthenticated(true); })
+      .catch(() => { auth.clear(); setIsAuthenticated(false); setAgent(null); });
   }, []);
 
   useEffect(() => {
@@ -54,17 +64,17 @@ const App: React.FC = () => {
     }
   }, [isAuthenticated]);
 
-  const handleLoginSuccess = (token?: string, remember?: boolean) => {
-      if (remember && token) {
-          localStorage.setItem('cm_auth_token', token);
-      }
+  const handleLoginSuccess = (token: string, loggedAgent: Agent, remember?: boolean) => {
+      auth.set(token, loggedAgent, !!remember);
+      setAgent(loggedAgent);
+      setActivePage(firstAllowedPage(loggedAgent));
       setIsAuthenticated(true);
   };
 
   const handleLogout = () => {
-      localStorage.removeItem('cm_auth_token');
+      auth.clear();
       setIsAuthenticated(false);
-      setActivePage('dashboard');
+      setAgent(null);
   };
 
   if (!isAuthenticated) {
@@ -150,7 +160,17 @@ const App: React.FC = () => {
   };
 
   const renderContent = () => {
+    if (!canSeePage(agent, activePage)) {
+      return (
+        <div className="flex flex-col items-center justify-center h-[50vh] text-gray-400">
+          <h2 className="text-xl font-semibold mb-2">Sem acesso</h2>
+          <p>Você não tem permissão para ver esta página. Fale com o administrador.</p>
+        </div>
+      );
+    }
     switch (activePage) {
+      case 'users':
+        return <Users />;
       case 'kanban':
         return <Dashboard 
                  userSettings={userSettings} 
@@ -209,27 +229,28 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <Sidebar 
-        activePage={activePage} 
-        setActivePage={setActivePage} 
+      <Sidebar
+        activePage={activePage}
+        setActivePage={setActivePage}
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
         onLogout={handleLogout}
+        agent={agent}
       />
       
       <main className="flex-1 overflow-hidden w-full relative flex flex-col">
         {activePage !== 'dashboard' && activePage !== 'kanban' && (
           <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center sticky top-0 z-30 shrink-0">
             <h2 className="text-lg font-semibold text-gray-700 capitalize">
-              {activePage === 'bulksend' ? 'Envio em Massa' : activePage === 'settings' ? 'Usuário' : activePage === 'send' ? 'Envio' : activePage === 'pendencies' ? 'Situação Fiscal' : activePage}
+              {activePage === 'bulksend' ? 'Envio em Massa' : activePage === 'settings' ? 'Usuário' : activePage === 'send' ? 'Envio' : activePage === 'pendencies' ? 'Situação Fiscal' : activePage === 'users' ? 'Usuários' : activePage}
             </h2>
             <div className="flex items-center gap-4">
                <div className="text-sm text-right hidden sm:block">
-                  <p className="font-bold text-gray-700">Lucas Araújo</p>
-                  <p className="text-gray-500 text-xs">Contador | CRC-BA 046968/O</p>
+                  <p className="font-bold text-gray-700">{agent?.name || 'Usuário'}</p>
+                  <p className="text-gray-500 text-xs">{agent?.role === 'admin' ? 'Administrador' : (agent?.department || 'Colaborador')}</p>
                </div>
-               <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-bold border-2 border-white shadow-sm">
-                  LA
+               <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-bold border-2 border-white shadow-sm uppercase">
+                  {(agent?.name || 'U').split(' ').map(w => w[0]).slice(0, 2).join('')}
                </div>
             </div>
           </header>

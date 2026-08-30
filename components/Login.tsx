@@ -3,7 +3,7 @@ import { Lock, User, LogIn, Loader2, AlertCircle, CheckSquare } from 'lucide-rea
 import { api } from '../services/api';
 
 interface LoginProps {
-  onLoginSuccess: (token?: string, remember?: boolean) => void;
+  onLoginSuccess: (token: string, agent: any, remember?: boolean) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
@@ -20,13 +20,13 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
     try {
       const result = await api.login(user, password);
-      if (result.success) {
-        onLoginSuccess(result.token, rememberMe);
+      if (result.success && result.token) {
+        onLoginSuccess(result.token, result.agent, rememberMe);
       } else {
-        setError('Usuário ou senha incorretos.');
+        setError(result.error || 'Usuário ou senha incorretos.');
       }
-    } catch (err) {
-      setError('Erro ao conectar com o servidor.');
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao conectar com o servidor.');
     } finally {
       setLoading(false);
     }

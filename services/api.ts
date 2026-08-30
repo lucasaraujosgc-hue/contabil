@@ -1,9 +1,31 @@
 import { Company, Task, Document, UserSettings, ScheduledMessage } from '../types';
 
 const API_URL = '/api';
+const TOKEN_KEY = 'cm_auth_token';
+const AGENT_KEY = 'cm_auth_agent';
+
+// token pode estar em localStorage (permanecer conectado) ou sessionStorage (sessão)
+export const auth = {
+  getToken: (): string | null =>
+    localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY),
+  getAgent: (): any | null => {
+    const raw = localStorage.getItem(AGENT_KEY) || sessionStorage.getItem(AGENT_KEY);
+    try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  },
+  set: (token: string, agent: any, remember: boolean) => {
+    const store = remember ? localStorage : sessionStorage;
+    const other = remember ? sessionStorage : localStorage;
+    other.removeItem(TOKEN_KEY); other.removeItem(AGENT_KEY);
+    store.setItem(TOKEN_KEY, token);
+    if (agent) store.setItem(AGENT_KEY, JSON.stringify(agent));
+  },
+  clear: () => {
+    [localStorage, sessionStorage].forEach(s => { s.removeItem(TOKEN_KEY); s.removeItem(AGENT_KEY); });
+  },
+};
 
 const getHeaders = (): Record<string, string> => {
-  const token = localStorage.getItem('cm_auth_token');
+  const token = auth.getToken();
   return {
     'Content-Type': 'application/json',
     'Authorization': token ? `Bearer ${token}` : ''
@@ -11,46 +33,77 @@ const getHeaders = (): Record<string, string> => {
 };
 
 const getAuthHeader = (): Record<string, string> => {
-    const token = localStorage.getItem('cm_auth_token');
-    if (token) {
-        return { 'Authorization': `Bearer ${token}` };
-    }
-    return {};
+  const token = auth.getToken();
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
 };
 
 const handleResponse = async (res: Response) => {
-  if (res.status === 401 || res.status === 403) {
-    localStorage.removeItem('cm_auth_token');
-    window.location.href = '/'; 
-    throw new Error("Sessão expirada. Faça login novamente.");
-  }
-
   const contentType = res.headers.get("content-type");
-  if (contentType && contentType.indexOf("application/json") !== -1) {
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
-    return data;
-  } else {
-    const text = await res.text();
-    if (!res.ok) throw new Error(text || `Erro ${res.status}`);
-    return { success: true };
+  const isJson = contentType && contentType.indexOf("application/json") !== -1;
+  const data = isJson ? await res.json().catch(() => ({})) : { _text: await res.text().catch(() => '') };
+
+  if (res.status === 401) {
+    // sessão expirada / revogada -> desloga
+    auth.clear();
+    if (!window.location.pathname.startsWith('/definir-acesso')) window.location.href = '/';
+    throw new Error(data.error || "Sessão expirada. Faça login novamente.");
   }
+  if (!res.ok) {
+    // 403 (sem permissão) e demais erros: propaga a mensagem, NÃO desloga
+    throw new Error(data.error || data._text || `Erro ${res.status}`);
+  }
+  return isJson ? data : { success: true };
 };
 
 export const api = {
-  // Authenticationo
-  login: async (user: string, pass: string): Promise<{ success: boolean; token?: string }> => {
+  // --- Autenticação ---
+  login: async (user: string, pass: string): Promise<{ success: boolean; token?: string; agent?: any; error?: string }> => {
     try {
       const res = await fetch(`${API_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user, password: pass }),
       });
-      return handleResponse(res);
-    } catch (error) {
-      console.error("Login failed", error);
-      return { success: false };
+      return await handleResponse(res);
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Erro ao conectar com o servidor.' };
     }
+  },
+
+  me: async (): Promise<any> => {
+    const res = await fetch(`${API_URL}/auth/me`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
+  // --- Convite / definição de acesso (páginas públicas) ---
+  getInvite: async (token: string): Promise<{ name: string; email: string; reset: boolean }> => {
+    const res = await fetch(`${API_URL}/auth/invite?token=${encodeURIComponent(token)}`);
+    return handleResponse(res);
+  },
+  activateInvite: async (token: string, username: string, password: string): Promise<{ success: boolean }> => {
+    const res = await fetch(`${API_URL}/auth/activate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, username, password }),
+    });
+    return handleResponse(res);
+  },
+
+  // --- Gestão de colaboradores (admin) ---
+  listAgents: async (): Promise<{ agents: any[]; tabs: string[]; defaultPermissions: any }> => {
+    const res = await fetch(`${API_URL}/agents`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+  createAgent: async (payload: { name: string; email: string; department?: string; role?: string; permissions: any }): Promise<any> => {
+    const res = await fetch(`${API_URL}/agents`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
+    return handleResponse(res);
+  },
+  updateAgent: async (id: number, payload: { name?: string; email?: string; department?: string; role?: string; permissions?: any }): Promise<any> => {
+    const res = await fetch(`${API_URL}/agents/${id}`, { method: 'PUT', headers: getHeaders(), body: JSON.stringify(payload) });
+    return handleResponse(res);
+  },
+  agentAction: async (id: number, action: 'revoke' | 'reactivate' | 'reset-password' | 'resend-invite'): Promise<any> => {
+    const res = await fetch(`${API_URL}/agents/${id}/${action}`, { method: 'POST', headers: getAuthHeader() });
+    return handleResponse(res);
   },
 
   // Settings

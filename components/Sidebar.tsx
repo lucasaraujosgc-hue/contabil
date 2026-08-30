@@ -19,6 +19,7 @@ import {
   FileSearch
 } from 'lucide-react';
 import { api } from '../services/api';
+import { Agent, canSeePage } from '../utils/perms';
 
 interface SidebarProps {
   activePage: string;
@@ -26,9 +27,10 @@ interface SidebarProps {
   isOpen: boolean;
   setIsOpen: (isOpen: boolean) => void;
   onLogout?: () => void;
+  agent?: Agent | null;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isOpen, setIsOpen, onLogout }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isOpen, setIsOpen, onLogout, agent }) => {
   const [totalSize, setTotalSize] = useState(0);
 
   useEffect(() => {
@@ -46,7 +48,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isOpen, se
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const menuItems = [
+  const allMenuItems = [
     { id: 'kanban', label: 'Kanban (WhatsApp)', icon: MessageCircle },
     { id: 'dashboard', label: 'Painel de Tarefas', icon: LayoutDashboard },
     { id: 'companies', label: 'Empresas', icon: Building2 },
@@ -59,7 +61,9 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isOpen, se
     { id: 'whatsapp', label: 'WhatsApp', icon: MessageCircle },
     { id: 'gallery', label: 'Galeria de Arquivos', icon: FolderOpen },
     { id: 'settings', label: 'Usuário', icon: UserCog },
+    { id: 'users', label: 'Usuários', icon: Users },
   ];
+  const menuItems = allMenuItems.filter((item) => canSeePage(agent, item.id));
 
   return (
     <>
