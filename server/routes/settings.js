@@ -1,7 +1,11 @@
 import express from 'express';
 import { getDb } from '../db/index.js';
 import { sendDailySummaryToUser } from '../services/whatsappService.js';
+import { requirePermission } from '../middleware/auth.js';
 const router = express.Router();
+
+// GET /settings fica aberto a qualquer agente autenticado — o app inteiro depende
+// dele (categorias, templates, kanban). Só a ESCRITA exige permissão de settings.
 
 router.get('/settings', async (req, res) => {
     const db = getDb(req.user);
@@ -14,7 +18,7 @@ router.get('/settings', async (req, res) => {
     }
 });
 
-router.post('/settings', async (req, res) => {
+router.post('/settings', requirePermission('settings', 'edit'), async (req, res) => {
     const db = getDb(req.user);
     if (!db) return res.status(500).json({ error: 'Database error' });
     const settingsJson = JSON.stringify(req.body);

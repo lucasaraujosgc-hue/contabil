@@ -1,9 +1,10 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import { getDb } from '../db/index.js';
+import { requirePermission } from '../middleware/auth.js';
 const router = express.Router();
 
-router.get('/companies', async (req, res) => { 
+router.get('/companies', requirePermission('companies', 'view'), async (req, res) => {
     const db = getDb(req.user);
     if (!db) return res.status(500).json({ error: 'Database error' });
     try {
@@ -14,7 +15,9 @@ router.get('/companies', async (req, res) => {
     }
 });
 
-router.post('/companies', async (req, res) => {
+router.post('/companies', (req, res, next) => {
+    return requirePermission('companies', req.body?.id ? 'edit' : 'create')(req, res, next);
+}, async (req, res) => {
     const { id, name, nickname, docNumber, type, email, whatsapp, categories, observation, companyHash } = req.body;
     const db = getDb(req.user);
     if (!db) return res.status(500).json({ error: 'Database error' });
@@ -37,7 +40,7 @@ router.post('/companies', async (req, res) => {
     }
 });
 
-router.delete('/companies/:id', async (req, res) => { 
+router.delete('/companies/:id', requirePermission('companies', 'edit'), async (req, res) => {
     const db = getDb(req.user);
     if (!db) return res.status(500).json({ error: 'Database error' });
     try {

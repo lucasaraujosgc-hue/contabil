@@ -8,6 +8,7 @@ import tasksRouter from './tasks.js';
 import scheduledRouter from './scheduledMessages.js';
 import documentsRouter from './documents.js';
 import whatsappRouter from './whatsapp.js';
+import agentsRouter from './agents.js';
 
 // Registra as rotas na MESMA ordem do server.js original:
 //   /api/ai/chat  ->  /api/login  ->  /api/pendencies (auth)  ->  gate global  ->  demais
@@ -17,6 +18,7 @@ export function setupRoutes(app) {
     app.use('/api/pendencies', authenticateToken, pendenciesRouter);
     app.use('/api', authenticateToken);   // gate global — tudo abaixo exige token
 
+    app.use('/api/agents', agentsRouter); // gestão de colaboradores (admin)
     app.use('/api', documentsRouter);     // /upload, /notify-webhook, /documents/status, /send-documents, /recent-sends, /file-gallery/*
     app.use('/api', settingsRouter);      // /settings, /trigger-daily-summary
     app.use('/api', companiesRouter);

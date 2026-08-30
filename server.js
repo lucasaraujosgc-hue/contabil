@@ -5,16 +5,21 @@ import cors from 'cors';
 
 import { ROOT_DIR, DATA_DIR, PORT } from './server/config.js';
 import { log } from './server/logger.js';
-import { initDb } from './server/db/index.js';
+import { initDb, getDb } from './server/db/index.js';
+import { assertAuthConfigured } from './server/middleware/auth.js';
+import { seedAdminIfEmpty } from './server/services/agents.js';
 import { setupRoutes } from './server/routes/index.js';
 import { startCron } from './server/services/cronService.js';
 
 log("Servidor iniciando...");
 log(`Diretório de dados: ${DATA_DIR}`);
 
+assertAuthConfigured();
 await initDb();
+await seedAdminIfEmpty(getDb());
 
 const app = express();
+app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
 
 // --- CONFIGURAÇÃO DO EXPRESS ---
 app.use(cors());

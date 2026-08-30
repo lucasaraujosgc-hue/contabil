@@ -172,3 +172,21 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chatId ON whatsapp_messages(cha
 CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_name ON whatsapp_contacts(name);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_phone ON whatsapp_contacts(phone_number);
+
+-- ── Colaboradores / autenticação (Tarefa 2) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS agents (
+  id                 SERIAL PRIMARY KEY,
+  name               TEXT NOT NULL,
+  username           TEXT UNIQUE,                     -- nulo enquanto o convite não foi ativado
+  password_hash      TEXT,                            -- bcrypt; nulo enquanto não ativado
+  email              TEXT,
+  department         TEXT,
+  role               TEXT NOT NULL DEFAULT 'colaborador',   -- 'admin' | 'colaborador'
+  permissions        TEXT,                            -- JSON { aba: { view, edit, create } }
+  status             TEXT NOT NULL DEFAULT 'invited',  -- 'invited' | 'active' | 'revoked' | 'reset_pending'
+  token_version      INTEGER NOT NULL DEFAULT 0,       -- bump invalida todo JWT já emitido p/ esse agente
+  invite_token_hash  TEXT,                            -- sha256 do token de convite (uso único)
+  invite_expires_at  TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agents_username ON agents(username);

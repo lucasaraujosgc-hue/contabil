@@ -1,9 +1,10 @@
 import express from 'express';
 import { getDb } from '../db/index.js';
 import { getGoogleAccessToken } from '../services/googleService.js';
+import { requirePermission } from '../middleware/auth.js';
 const router = express.Router();
 
-router.get('/tasks/sync', async (req, res) => {
+router.get('/tasks/sync', requirePermission('tasks', 'view'), async (req, res) => {
     try {
         const db = getDb(req.user);
         
@@ -46,7 +47,7 @@ router.get('/tasks/sync', async (req, res) => {
     }
 });
 
-router.get('/tasks', async (req, res) => {
+router.get('/tasks', requirePermission('tasks', 'view'), async (req, res) => {
     try {
         res.json(await getDb(req.user).prepare('SELECT * FROM tasks').all());
     } catch (err) {
@@ -54,7 +55,7 @@ router.get('/tasks', async (req, res) => {
     }
 });
 
-router.post('/tasks', async (req, res) => {
+router.post('/tasks', (req, res, next) => requirePermission('tasks', (req.body?.id && req.body.id < 1e12) ? 'edit' : 'create')(req, res, next), async (req, res) => {
     const t = req.body;
     const db = getDb(req.user);
     const today = new Date().toISOString().split('T')[0];
@@ -128,7 +129,7 @@ router.post('/tasks', async (req, res) => {
     }
 });
 
-router.delete('/tasks/:id', async (req, res) => {
+router.delete('/tasks/:id', requirePermission('tasks', 'edit'), async (req, res) => {
     try {
         const db = getDb(req.user);
         const oldTask = await db.prepare('SELECT googleTaskId FROM tasks WHERE id = ?').get(req.params.id);

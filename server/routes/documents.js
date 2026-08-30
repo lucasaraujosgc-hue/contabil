@@ -4,18 +4,18 @@ import fs from 'fs';
 import { UPLOADS_DIR } from '../config.js';
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { getWaClientWrapper, MessageMedia } from '../services/whatsappService.js';
 import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars } from '../services/emailService.js';
 const router = express.Router();
 
-router.post('/upload', upload.single('file'), (req, res) => {
+router.post('/upload', requirePermission('documents','create'), upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
     res.json({ filename: req.file.filename, originalName: req.file.originalname });
 });
 
-router.post('/notify-webhook', async (req, res) => {
+router.post('/notify-webhook', requirePermission('documents','create'), async (req, res) => {
     try {
         const { serverFilename, originalName, dueDate, category, companyId, competence } = req.body;
         if (!serverFilename || !companyId) return res.json({ success: true, reason: 'missing data' });
@@ -66,7 +66,7 @@ router.post('/notify-webhook', async (req, res) => {
     }
 });
 
-router.get('/documents/status', async (req, res) => {
+router.get('/documents/status', requirePermission('documents','view'), async (req, res) => {
     try {
         const sql = req.query.competence ? 'SELECT * FROM document_status WHERE competence = ?' : 'SELECT * FROM document_status';
         const rows = req.query.competence
@@ -78,7 +78,7 @@ router.get('/documents/status', async (req, res) => {
     }
 });
 
-router.post('/documents/status', async (req, res) => {
+router.post('/documents/status', requirePermission('documents','edit'), async (req, res) => {
     const { companyId, category, competence, status } = req.body;
     try {
         await getDb(req.user).prepare(
@@ -90,7 +90,7 @@ router.post('/documents/status', async (req, res) => {
     }
 });
 
-router.post('/send-documents', async (req, res) => {
+router.post('/send-documents', requirePermission('documents','edit'), async (req, res) => {
     const { documents, subject, messageBody, channels, emailSignature, whatsappTemplate, whatsappFileSignature, isBulk } = req.body;
     
     log(`[API send-documents] Iniciando envio de ${documents.length} documentos. Channels: ${JSON.stringify(channels)}`);
@@ -259,7 +259,7 @@ router.post('/send-documents', async (req, res) => {
     res.json({ success: true, sent: successCount, sentIds, errors });
 });
 
-router.get('/recent-sends', async (req, res) => {
+router.get('/recent-sends', requirePermission('documents','view'), async (req, res) => {
     try {
         res.json(await getDb(req.user).prepare("SELECT * FROM sent_logs ORDER BY id DESC LIMIT 3").all());
     } catch (err) {
@@ -267,7 +267,7 @@ router.get('/recent-sends', async (req, res) => {
     }
 });
 
-router.get('/file-gallery', authenticateToken, async (req, res) => {
+router.get('/file-gallery', authenticateToken, requirePermission('documents','view'), async (req, res) => {
     try {
         res.json(await getDb(req.user).prepare("SELECT * FROM file_gallery ORDER BY timestamp DESC").all());
     } catch (err) {
@@ -275,7 +275,7 @@ router.get('/file-gallery', authenticateToken, async (req, res) => {
     }
 });
 
-router.delete('/file-gallery/:id', authenticateToken, async (req, res) => {
+router.delete('/file-gallery/:id', authenticateToken, requirePermission('documents','edit'), async (req, res) => {
     const db = getDb(req.user);
     try {
         const row = await db.prepare("SELECT serverFilename FROM file_gallery WHERE id = ?").get(req.params.id);
@@ -291,7 +291,7 @@ router.delete('/file-gallery/:id', authenticateToken, async (req, res) => {
     }
 });
 
-router.get('/file-gallery/download/:id', authenticateToken, async (req, res) => {
+router.get('/file-gallery/download/:id', authenticateToken, requirePermission('documents','view'), async (req, res) => {
     const db = getDb(req.user);
     try {
         const row = await db.prepare("SELECT serverFilename, originalName, mimeType FROM file_gallery WHERE id = ?").get(req.params.id);
@@ -304,7 +304,7 @@ router.get('/file-gallery/download/:id', authenticateToken, async (req, res) => 
     }
 });
 
-router.get('/file-gallery/view/:id', authenticateToken, async (req, res) => {
+router.get('/file-gallery/view/:id', authenticateToken, requirePermission('documents','view'), async (req, res) => {
     const db = getDb(req.user);
     try {
         const row = await db.prepare(`SELECT serverFilename, originalName, mimeType FROM file_gallery WHERE id = ?`).get(req.params.id);

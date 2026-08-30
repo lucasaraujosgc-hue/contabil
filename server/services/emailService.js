@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
 import { log } from '../logger.js';
+import { APP_BASE_URL } from '../config.js';
 
 // --- EMAIL CONFIGURATION --- (extraído do server.js, sem alterações)
 const emailPort = parseInt(process.env.EMAIL_PORT || '465');
@@ -100,6 +101,40 @@ export const saveToImapSentFolder = async (mailOptions) => {
         if (imap) await imap.logout().catch(() => {});
     }
 };
+
+// --- Convite de colaborador ---
+export async function sendInviteEmail(agent, rawToken, { reset = false } = {}) {
+    if (!agent?.email) throw new Error('Colaborador sem e-mail cadastrado.');
+    const link = `${APP_BASE_URL}/definir-acesso?token=${encodeURIComponent(rawToken)}`;
+    const title = reset ? 'Redefinição de acesso — Contábil Manager Pro'
+                        : 'Convite para o Contábil Manager Pro';
+    const acao = reset ? 'redefinir sua senha' : 'criar seu acesso';
+    const html = `
+      <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;color:#333">
+        <h2 style="color:#2563eb">Contábil Manager Pro</h2>
+        <p>Olá, <strong>${agent.name}</strong>.</p>
+        <p>${reset ? 'Foi solicitada uma redefinição de acesso para a sua conta.'
+                   : 'Você foi convidado para acessar o Contábil Manager Pro.'}
+           Clique no botão abaixo para ${acao}. O link expira em 48 horas e só pode ser usado uma vez.</p>
+        <p style="margin:28px 0">
+          <a href="${link}" style="background:#2563eb;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:bold">
+            ${reset ? 'Redefinir senha' : 'Criar meu acesso'}
+          </a>
+        </p>
+        <p style="font-size:13px;color:#64748b">Se o botão não funcionar, copie e cole no navegador:<br>${link}</p>
+      </div>`;
+    const senderName = process.env.EMAIL_FROM_NAME || 'Contábil Manager Pro';
+    const senderEmail = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER;
+    const mailOptions = {
+        from: `"${senderName}" <${senderEmail}>`,
+        to: agent.email,
+        subject: title,
+        html,
+    };
+    await emailTransporter.sendMail(mailOptions);
+    await saveToImapSentFolder(mailOptions).catch((err) => log('[Invite] Falha ao salvar no IMAP', err));
+    log(`[Invite] E-mail de ${reset ? 'reset' : 'convite'} enviado para ${agent.email}`);
+}
 
 // --- HTML / message helpers ---
 export const processMessageVars = (msg, company) => {
