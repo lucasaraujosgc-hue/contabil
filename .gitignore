@@ -1,0 +1,14 @@
+node_modules/
+data/
+.env
+*.db
+*.db-shm
+*.db-wal
+dist/
+debug_whatsapp.log
+whatsapp_auth_*/
+.DS_Store
+migrated_prompt_history/
+
+.codemod/
+.smoketest/

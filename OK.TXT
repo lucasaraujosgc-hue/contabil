@@ -1,0 +1,58 @@
+# Estágio 1: Build do Frontend e Dependências
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+# Instala ferramentas necessárias para compilar módulos nativos (sqlite3) e git para dependências do GitHub
+RUN apk add --no-cache python3 make g++ git
+
+COPY package*.json ./
+
+# Instala todas as dependências (incluindo dev e nativas)
+# O git é necessário aqui para baixar 'whatsapp-web.js' do GitHub
+RUN npm install
+
+COPY . .
+
+# Build do Frontend (Vite)
+RUN npm run build
+
+# Estágio 2: Produção (Alpine + Chromium)
+FROM node:22-alpine
+
+# Instala o Chromium do sistema e dependências gráficas necessárias para o Puppeteer
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    nodejs \
+    yarn \
+    git
+
+WORKDIR /app
+
+# Variáveis para usar o Chromium do sistema
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+    DATA_PATH=/app/data
+
+# Copia package.json
+COPY package*.json ./
+
+# Copia as dependências já instaladas/compiladas do estágio anterior
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copia servidor e frontend buildado
+COPY server.js ./
+COPY --from=builder /app/dist ./dist
+
+# Cria diretórios necessários e ajusta permissões
+RUN mkdir -p /app/data/whatsapp_auth && \
+    mkdir -p /app/data/uploads && \
+    chown -R node:node /app
+
+USER node
+EXPOSE 3000
+CMD ["npm", "start"]

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="https://www.virgulacontabil.com.br/wp-content/uploads/2026/04/favicon.png" />
+    <title>Contábil Manager Pro</title>
+    <!-- Tailwind via CDN mantido pois não há index.css no projeto -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            colors: {
+              primary: '#2563eb',
+              secondary: '#475569',
+              success: '#10b981',
+              warning: '#f59e0b',
+              danger: '#ef4444',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: #f1f1f1; }
+      ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "xlsx": "https://esm.sh/xlsx@^0.18.5",
+    "jszip": "https://esm.sh/jszip@^3.10.1",
+    "pdfjs-dist": "https://esm.sh/pdfjs-dist@^5.4.530",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "dotenv/": "https://esm.sh/dotenv@^17.2.3/",
+    "express": "https://esm.sh/express@^5.2.1",
+    "module": "https://esm.sh/module@^2.0.0",
+    "path": "https://esm.sh/path@^0.12.7",
+    "url": "https://esm.sh/url@^0.11.4",
+    "cors": "https://esm.sh/cors@^2.8.6",
+    "whatsapp-web.js": "https://esm.sh/whatsapp-web.js@^1.34.4",
+    "qrcode": "https://esm.sh/qrcode@^1.5.4",
+    "fs": "https://esm.sh/fs@^0.0.1-security",
+    "sqlite3": "https://esm.sh/sqlite3@^5.1.7",
+    "multer": "https://esm.sh/multer@^2.0.2",
+    "nodemailer": "https://esm.sh/nodemailer@^7.0.12",
+    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
+    "imap-simple": "https://esm.sh/imap-simple@^5.1.0",
+    "mailparser": "https://esm.sh/mailparser@^3.9.3"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
