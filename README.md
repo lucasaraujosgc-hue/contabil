@@ -69,8 +69,9 @@ api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado ant
 - **"Admin do `.env`"** (`username === USERS[0]`, flag `isEnvAdmin`) é o único que
   edita as configs **globais**: Criar Categorias, Colunas da Matriz, Vinculações,
   Vencimentos, Tags de Empresas, Resumo Diário, Portal do Cliente, Integra Contador,
-  e o layout do Kanban. Cada colaborador só edita as **próprias assinaturas**
-  (e-mail + WhatsApp), guardadas em `agent_settings`.
+  e o layout do Kanban. Cada colaborador só edita o que é **seu**, guardado em
+  `agent_settings`: as assinaturas (e-mail + WhatsApp), o **nome que aparece nas
+  mensagens** do WhatsApp e o botão que **liga/desliga** esse nome.
 
 ## Kanban de atendimento (WhatsApp) — multi-atendente
 
@@ -91,7 +92,12 @@ api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado ant
   (`POST /api/whatsapp/viewing/:chatId`, TTL 60s); avatares no card mostram quem
   mais está olhando.
 - **Envio manual** de mensagem por um colaborador logado é prefixado com
-  `*Nome do Colaborador:*` (negrito nativo). Não vale para cron nem tools de IA.
+  `*Nome do Colaborador:*` (negrito nativo). O nome (padrão = nome de cadastro) e
+  o liga/desliga ficam na aba **Usuário → Assinaturas**, por colaborador. Não vale
+  para cron nem tools de IA.
+- **Card de prévia**: mostra dia/hora da última mensagem e `✓✓` azul quando quem
+  respondeu por último fomos nós; conversas com mensagem nova sobem pro topo; botão
+  de lixeira apaga a conversa (mensagens + metadados).
 
 ## Rodando localmente
 

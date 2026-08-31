@@ -326,7 +326,7 @@ router.post('/whatsapp/send-chat', upload.single('media'), async (req, res) => {
         if (req.file) {
             const fileData = fs.readFileSync(req.file.path).toString('base64');
             const media = new MessageMedia(req.file.mimetype, fileData, req.file.originalname);
-            await safeSendMessage(wrapper.client, chatId, content ? media : media, content ? {caption: content} : {});
+            await safeSendMessage(wrapper.client, chatId, media, content ? { caption: content } : {});
             const db = getDb(req.user);
             if(db) {
                 await db.prepare('INSERT INTO file_gallery (serverFilename, originalName, mimeType, size, contact, channel, direction, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')

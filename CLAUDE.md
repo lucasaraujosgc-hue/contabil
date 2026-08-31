@@ -82,10 +82,14 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
 ## Settings: global vs. por-colaborador
 
 - `user_settings` (id=1) = configs **globais**, só o `isEnvAdmin` grava.
-- `agent_settings` (por `agent_id`) = **só as 3 assinaturas** (`emailSignature`,
-  `whatsappTemplate`, `whatsappFileSignature`).
-- `GET /api/settings` devolve o global **mergeado** com a assinatura do agente
-  (admin vê a global até personalizar; colaborador começa em branco).
+- `agent_settings` (por `agent_id`) = coisas **por colaborador**: as 3 assinaturas
+  (`emailSignature`, `whatsappTemplate`, `whatsappFileSignature`), o nome usado no
+  prefixo do WhatsApp (`waSenderName`) e o liga/desliga desse prefixo
+  (`waPrefixEnabled`, padrão ligado). Lista canônica: `PERSONAL_SETTING_KEYS` em
+  `server/services/agents.js`.
+- `GET /api/settings` devolve o global **mergeado** com os campos do agente
+  (admin vê a global até personalizar; colaborador começa em branco). Se não há
+  linha global ainda, devolve `{}` + os campos por-colaborador (nunca `null`).
 - `POST /api/settings` **separa** o payload: assinatura → `agent_settings` do
   agente; resto → `user_settings` só se `isEnvAdmin`. **Não** grave o body inteiro
   em `user_settings` sem esse filtro (colaborador sobrescreveria o global).
@@ -117,8 +121,15 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
   TTL 60s). Heartbeat 25s com a conversa aberta; avatares no card vêm do
   `viewers` da resposta do `/api/inbox`.
 - **Prefixo `*Nome:*`**: `POST /api/whatsapp/send-chat` prefixa texto/legenda com
-  `*${req.agent.name}:* `. **Só ali** — cron e tools de IA mandam via
-  `safeSendMessage` direto e não levam prefixo.
+  `*${nome}:* ` via `waSenderConfig(db, agent)` = `{ name: waSenderName ||
+  agent.name || 'Atendente', enabled: waPrefixEnabled !== false }`. Nome e
+  liga/desliga são por colaborador (aba Usuário → Assinaturas). **Só nesse
+  endpoint** — cron e tools de IA mandam via `safeSendMessage` direto, sem prefixo.
+  `send-chat` e `documents.js` **importam `safeSendMessage`** de `whatsappService`
+  (esquecer esse import = 500 no envio).
+- **Timestamp no card**: `shortStamp(lastActivityAt)` em `conversations.ts`
+  (`"14:32"` hoje / `"ontem 14:32"` / `"05/03 14:32"`); `✓✓` azul (`CheckCheck`)
+  quando `lastMessageFromMe`.
 
 ## Não quebrar
 
@@ -143,7 +154,8 @@ npm install            # sem build nativo (pg é JS puro)
 npm start              # prod: initDb + serve dist/ + API
 npm run dev            # Vite :5173, proxy /api -> :3000  (rode `npm start` junto p/ ter API)
 npm run build          # vite build -> dist/
-npx tsc --noEmit       # checagem de tipos do front (3 erros PRÉ-EXISTENTES em Dashboard.tsx)
+npx tsc --noEmit       # checagem de tipos do front (6 erros PRÉ-EXISTENTES:
+                       #   Dashboard.tsx x3, BulkSend/Send `isBulk`, PendenciesTab `title`)
 ```
 
 Sem suíte de testes. Verificação durante o desenvolvimento: `pg-mem` (Postgres em
