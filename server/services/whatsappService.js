@@ -61,7 +61,7 @@ export const safeSendMessage = async (client, chatId, content, options = {}) => 
             if (finalChatId.endsWith('@c.us')) {
                 const numberPart = finalChatId.replace('@c.us', '').replace(/\D/g, '');
                 const contactId = await client.getNumberId(numberPart);
-                
+
                 if (contactId && contactId._serialized) {
                     finalChatId = contactId._serialized;
                 }
@@ -70,14 +70,11 @@ export const safeSendMessage = async (client, chatId, content, options = {}) => 
             log(`[WhatsApp] Erro não bloqueante ao resolver getNumberId: ${idErr.message}`);
         }
 
-        try {
-            const chat = await client.getChatById(finalChatId);
-            const msg = await chat.sendMessage(content, safeOptions);
-            return msg;
-        } catch (chatError) {
-            const msg = await client.sendMessage(finalChatId, content, safeOptions);
-            return msg;
-        }
+        // UM único caminho de envio. NÃO tentar de novo aqui: se o frame do
+        // Puppeteer desanexa (ou dá timeout de protocolo) DEPOIS que a mensagem
+        // já saiu, um retry cego reenvia — foi o que causou mensagens 2x/3x no
+        // envio em massa. Quem chama decide se e como retenta.
+        return await client.sendMessage(finalChatId, content, safeOptions);
 
     } catch (error) {
         log(`[WhatsApp] FALHA CRÍTICA NO ENVIO para ${chatId}`, error);

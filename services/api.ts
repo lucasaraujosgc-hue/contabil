@@ -281,7 +281,7 @@ export const api = {
   },
 
   // Send Documents Real
-  sendDocuments: async (payload: { documents: any[], subject: string, messageBody: string, channels: any, emailSignature?: string, whatsappTemplate?: string, whatsappFileSignature?: string }): Promise<any> => {
+  sendDocuments: async (payload: { documents: any[], subject: string, messageBody: string, channels: any, emailSignature?: string, whatsappTemplate?: string, whatsappFileSignature?: string, isBulk?: boolean }): Promise<any> => {
     const res = await fetch(`${API_URL}/send-documents`, {
         method: 'POST',
         headers: getHeaders(),

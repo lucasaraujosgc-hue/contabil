@@ -8,7 +8,12 @@ import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { getWaClientWrapper, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
 import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars, resolveFromAddress } from '../services/emailService.js';
+import { acquireSendLock, releaseSendLock, wasRecentlySent, markSent } from '../services/sendLock.js';
+import crypto from 'crypto';
 const router = express.Router();
+
+const waTextKey = (chatId, body) => `${chatId}|txt|${crypto.createHash('sha1').update(body || '').digest('hex')}`;
+const waMediaKey = (chatId, name, len) => `${chatId}|media|${name}|${len}`;
 
 router.post('/upload', requirePermission('documents','create'), upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
@@ -92,9 +97,21 @@ router.post('/documents/status', requirePermission('documents','edit'), async (r
 
 router.post('/send-documents', requirePermission('documents','edit'), async (req, res) => {
     const { documents, subject, messageBody, channels, emailSignature, whatsappTemplate, whatsappFileSignature, isBulk } = req.body;
-    
+
+    // Trava anti-duplicação: só um envio por vez pra esta sessão de WhatsApp.
+    const lockKey = req.user || 'default';
+    if (!acquireSendLock(lockKey, 'send-documents')) {
+        return res.status(409).json({ error: 'Já existe um envio em andamento. Aguarde ele terminar antes de iniciar outro.' });
+    }
+
+    // Se o proxy/cliente derrubar a conexão no meio, para de enviar em vez de
+    // seguir o loop até o fim (a mensagem já iria dobrar num retry).
+    let aborted = false;
+    res.on('close', () => { if (!res.writableFinished) aborted = true; });
+
+    try {
     log(`[API send-documents] Iniciando envio de ${documents.length} documentos. Channels: ${JSON.stringify(channels)}`);
-    
+
     const db = getDb(req.user);
     const waWrapper = getWaClientWrapper(req.user);
     const client = waWrapper.client;
@@ -107,6 +124,8 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
     let successCount = 0;
     let errors = [];
     let sentIds = [];
+    let skipped = 0; // envios ignorados por já terem saído nos últimos 10 min
+    const whatsappDone = new Set(); // chatIds já atendidos nesta execução
 
     const docsByCompany = documents.reduce((acc, doc) => {
         if (!acc[doc.companyId]) acc[doc.companyId] = [];
@@ -117,8 +136,9 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
     const companyIds = Object.keys(docsByCompany);
 
     for (const companyId of companyIds) {
+        if (aborted) { log('[API send-documents] conexão encerrada pelo cliente — interrompendo o restante do envio'); break; }
         const companyDocs = docsByCompany[companyId];
-        
+
         try {
             const company = await db.prepare("SELECT * FROM companies WHERE id = ?").get(companyId);
             if (!company) { errors.push(`Empresa ID ${companyId} não encontrada.`); continue; }
@@ -182,13 +202,16 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
                 }
             }
 
-            if (channels.whatsapp && company.whatsapp && clientReady) {
-                try {
-                    let number = company.whatsapp.replace(/\D/g, '');
-                    if (!number.startsWith('55')) number = '55' + number;
-                    const chatId = `${number}@c.us`;
+            let number = company.whatsapp ? company.whatsapp.replace(/\D/g, '') : '';
+            if (number && !number.startsWith('55')) number = '55' + number;
+            const chatId = number ? `${number}@c.us` : '';
 
-                    const listaArquivos = validAttachments.map(att => 
+            if (channels.whatsapp && company.whatsapp && clientReady && whatsappDone.has(chatId)) {
+                log(`[API send-documents] ${chatId} já recebeu nesta execução — ignorando duplicata`);
+            } else if (channels.whatsapp && company.whatsapp && clientReady) {
+                whatsappDone.add(chatId);
+                try {
+                    const listaArquivos = validAttachments.map(att =>
                         `• ${att.docData.docName} (${att.docData.category || 'Anexo'}, Venc: ${att.docData.dueDate || 'N/A'})`
                     ).join('\n');
                     
@@ -202,15 +225,25 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
                     
                     mensagemCompleta += `\n\n${whatsappSignature}`;
 
-                    await safeSendMessage(client, chatId, mensagemCompleta);
+                    const txtKey = waTextKey(chatId, mensagemCompleta);
+                    if (wasRecentlySent(txtKey)) {
+                        skipped++;
+                        log(`[API send-documents] texto idêntico já enviado p/ ${chatId} nos últimos 10min — ignorando`);
+                    } else {
+                        await safeSendMessage(client, chatId, mensagemCompleta);
+                        markSent(txtKey);
+                    }
 
                     for (const att of validAttachments) {
                         try {
                             const fileData = fs.readFileSync(att.path).toString('base64');
+                            const mKey = waMediaKey(chatId, att.filename, fileData.length);
+                            if (wasRecentlySent(mKey)) { skipped++; continue; }
                             const media = new MessageMedia(att.contentType, fileData, att.filename);
-                            
+
                             await safeSendMessage(client, chatId, media);
-                            
+                            markSent(mKey);
+
                             await new Promise(r => setTimeout(r, 3000));
                         } catch (mediaErr) {
                             log(`[WhatsApp] Erro envio mídia ${att.filename}`, mediaErr);
@@ -254,7 +287,13 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
         }
     }
     
-    res.json({ success: true, sent: successCount, sentIds, errors });
+    res.json({ success: true, sent: successCount, skipped, sentIds, errors, aborted });
+    } catch (fatal) {
+        log('[API send-documents] Falha fatal', fatal);
+        if (!res.headersSent) res.status(500).json({ error: fatal.message || 'Erro no envio' });
+    } finally {
+        releaseSendLock(lockKey);
+    }
 });
 
 router.get('/recent-sends', requirePermission('documents','view'), async (req, res) => {

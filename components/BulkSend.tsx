@@ -145,7 +145,7 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
               // vamos permitir, mas a API server.js precisa ser capaz de enviar só texto.
               // Ajustei server.js para permitir envio sem anexo (código anterior já tinha lógica para anexos, mas o loop depende de companyDocs).
               
-              await api.sendDocuments({
+              const r = await api.sendDocuments({
                   documents: documentsPayload,
                   subject: subject,
                   messageBody: message,
@@ -156,7 +156,11 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
                   isBulk: true,
               });
 
-              alert("Envio em massa processado!");
+              const parts = [`Envio processado: ${r?.sent ?? 0} destinatário(s).`];
+              if (r?.skipped) parts.push(`${r.skipped} ignorado(s) por já terem recebido a mesma mensagem nos últimos 10 min.`);
+              if (r?.aborted) parts.push('A conexão caiu no meio — parte do envio pode não ter saído. NÃO reenvie na hora: espere alguns minutos e confira antes.');
+              if (r?.errors?.length) parts.push(`${r.errors.length} erro(s).`);
+              alert(parts.join('\n'));
           }
           
           // Reset

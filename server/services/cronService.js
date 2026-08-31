@@ -1,11 +1,13 @@
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { UPLOADS_DIR } from '../config.js';
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { getWaClientWrapper, safeSendMessage, MessageMedia } from './whatsappService.js';
 import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars, resolveFromAddress } from './emailService.js';
 import { getAgentByUsername } from './agents.js';
+import { wasRecentlySent, markSent } from './sendLock.js';
 
 // --- CRON JOB --- (extraído do server.js; lógica inalterada, só adaptado p/ Postgres async)
 async function tick() {
@@ -40,6 +42,23 @@ async function tick() {
         } catch (e) {}
 
         for (const msg of rows) {
+            // Reagenda/desativa ANTES de enviar. Se o envio cair no meio do lote,
+            // o próximo tick NÃO repete tudo (era um loop que reenviava a cada 60s).
+            try {
+                if (msg.recurrence === 'unico') {
+                    await db.prepare("UPDATE scheduled_messages SET active = 0 WHERE id = ?").run(msg.id);
+                } else {
+                    const nextDate = new Date(msg.nextRun);
+                    if (msg.recurrence === 'diaria') nextDate.setDate(nextDate.getDate() + 1);
+                    else if (msg.recurrence === 'semanal') nextDate.setDate(nextDate.getDate() + 7);
+                    else if (msg.recurrence === 'mensal') nextDate.setMonth(nextDate.getMonth() + 1);
+                    else if (msg.recurrence === 'trimestral') nextDate.setMonth(nextDate.getMonth() + 3);
+                    else if (msg.recurrence === 'semestral') nextDate.setMonth(nextDate.getMonth() + 6);
+                    else if (msg.recurrence === 'anual') nextDate.setFullYear(nextDate.getFullYear() + 1);
+                    await db.prepare("UPDATE scheduled_messages SET nextRun = ? WHERE id = ?").run(nextDate.toISOString().slice(0, 16), msg.id);
+                }
+            } catch (e) { log(`[CRON] falha ao reagendar msg ${msg.id}`, e); }
+
             try {
                 // alias de e-mail de quem criou o agendamento (fallback: remetente do .env)
                 let creatorAgent = null;
@@ -165,13 +184,22 @@ async function tick() {
                                 const whatsappSignature = settings?.whatsappFileSignature || '';
                                 waBody += `\n\n${whatsappSignature}`;
 
-                                await safeSendMessage(waWrapper.client, chatId, waBody);
+                                const txtKey = `${chatId}|txt|${crypto.createHash('sha1').update(waBody).digest('hex')}`;
+                                if (wasRecentlySent(txtKey)) {
+                                    log(`[CRON] texto idêntico já enviado p/ ${chatId} nos últimos 10min — ignorando`);
+                                } else {
+                                    await safeSendMessage(waWrapper.client, chatId, waBody);
+                                    markSent(txtKey);
+                                }
 
                                 for (const att of attachmentsToSend) {
                                     try {
                                         const fileData = fs.readFileSync(att.path).toString('base64');
+                                        const mKey = `${chatId}|media|${att.filename}|${fileData.length}`;
+                                        if (wasRecentlySent(mKey)) continue;
                                         const media = new MessageMedia(att.contentType, fileData, att.filename);
                                         await safeSendMessage(waWrapper.client, chatId, media);
+                                        markSent(mKey);
                                         await new Promise(r => setTimeout(r, 3000));
                                     } catch (err) {
                                         log(`[CRON] Erro media zap ${att.filename}`, err);
@@ -194,19 +222,6 @@ async function tick() {
                     }
                 }
 
-                if (msg.recurrence === 'unico') {
-                    await db.prepare("UPDATE scheduled_messages SET active = 0 WHERE id = ?").run(msg.id);
-                } else {
-                    const nextDate = new Date(msg.nextRun);
-                    if (msg.recurrence === 'diaria') nextDate.setDate(nextDate.getDate() + 1);
-                    else if (msg.recurrence === 'semanal') nextDate.setDate(nextDate.getDate() + 7);
-                    else if (msg.recurrence === 'mensal') nextDate.setMonth(nextDate.getMonth() + 1);
-                    else if (msg.recurrence === 'trimestral') nextDate.setMonth(nextDate.getMonth() + 3);
-                    else if (msg.recurrence === 'anual') nextDate.setFullYear(nextDate.getFullYear() + 1);
-
-                    const nextRunStr = nextDate.toISOString().slice(0, 16);
-                    await db.prepare("UPDATE scheduled_messages SET nextRun = ? WHERE id = ?").run(nextRunStr, msg.id);
-                }
             } catch(e) {
                 log(`[CRON] Erro crítico processando msg ID ${msg.id}`, e);
             }
