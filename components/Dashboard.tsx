@@ -5,8 +5,9 @@ import {
   Paperclip, Music, FileText, Image as ImageIcon, RefreshCw, History, Download, Calendar,
   Eye, Users as UsersIcon
 } from 'lucide-react';
-import { UserSettings, WaKanbanState, WaKanbanColumn, WaKanbanTag, WaKanbanCard } from '../types';
+import { UserSettings, WaKanbanState, WaKanbanColumn, WaKanbanTag, WaKanbanCard, Conversation } from '../types';
 import { api, auth } from '../services/api';
+import { waitingMinutes, waitingLabel, urgency, URGENCY_CLS, applyUpdate } from './dashboard/conversations';
 import ReactMarkdown from 'react-markdown';
 
 // Helper: resolve display label for a chatId
@@ -59,9 +60,16 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [tagMenuCardId, setTagMenuCardId] = useState<string | null>(null);
   const [teamAgents, setTeamAgents] = useState<{ id: number; name: string; department: string | null; role: string }[]>([]);
-  const [viewFilter, setViewFilter] = useState<'all' | 'my_dept' | 'mine'>('all');
   const [chatViewers, setChatViewers] = useState<{ agentId: number; name: string; department: string | null; since: number }[]>([]);
   const me = auth.getAgent();
+  // --- inbox de atendimento ---
+  const [conversations, setConversations] = useState<Record<string, Conversation>>({});
+  const [inboxFilter, setInboxFilter] = useState<'all' | 'mine' | 'unassigned' | 'waiting'>('all');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [showResolved, setShowResolved] = useState(false);
+  const [nowTick, setNowTick] = useState(Math.floor(Date.now() / 1000));
+  const [transferChatId, setTransferChatId] = useState<string | null>(null);
+  const [claimConflict, setClaimConflict] = useState<{ chatId: string; name: string } | null>(null);
   const [chatDetailsMap, setChatDetailsMap] = useState<Record<string, { profilePicUrl?: string | null, lastMessage?: string, lastMessageFromMe?: boolean, name?: string, number?: string | null }>>({});
   const [expandedMediaUrl, setExpandedMediaUrl] = useState<string | null>(null);
   const [expandedMediaType, setExpandedMediaType] = useState<'image' | 'video' | 'document' | null>(null);
@@ -93,24 +101,47 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 
   const kanbanState: WaKanbanState = userSettings.waKanban || { columns: [], tags: [], cards: [] };
   const departments = kanbanState.departments || [];
-  const getDept = (id?: string) => (id ? departments.find(d => d.id === id) : undefined);
-  const getAgent = (id?: number) => (id ? teamAgents.find(a => a.id === id) : undefined);
+  const yellowMin = kanbanState.urgencyYellowMin ?? 15;
+  const redMin = kanbanState.urgencyRedMin ?? 30;
+  const getDept = (id?: string | null) => (id ? departments.find(d => d.id === id) : undefined);
+  const getAgent = (id?: number | null) => (id ? teamAgents.find(a => a.id === id) : undefined);
   const initials = (n?: string) => (n || '?').split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const conv = (chatId: string): Conversation | undefined => conversations[chatId];
 
-  // Atualiza um campo (department / assignedAgentId / etc.) de um card, criando-o se preciso.
-  const patchCard = (cardId: string, cardName: string, patch: Partial<WaKanbanCard>) => {
-    const newCards = [...kanbanState.cards];
-    let idx = newCards.findIndex(c => c.id === cardId);
-    if (idx < 0) {
-      newCards.push({ id: cardId, colId: kanbanState.columns[0]?.id || '', tagIds: [], name: cardName || '' });
-      idx = newCards.length - 1;
-    }
-    newCards[idx] = { ...newCards[idx], ...patch };
-    updateKanbanState({ ...kanbanState, cards: newCards });
+  const loadInbox = async () => {
+    try {
+      const list = await api.getInbox({ resolved: showResolved });
+      const map: Record<string, Conversation> = {};
+      for (const c of list) map[c.chatId] = c;
+      setConversations(map);
+    } catch (e) { /* silencioso */ }
+  };
+
+  // aplica localmente o resultado de uma ação (patch/claim/resolve/transfer)
+  const mergeConversation = (c: Conversation | undefined | null) => {
+    if (c && c.chatId) setConversations(prev => ({ ...prev, [c.chatId]: { ...prev[c.chatId], ...c } }));
+  };
+
+  const doClaim = async (chatId: string, force = false) => {
+    const r = await api.claimConversation(chatId, force);
+    if (r.conflict) { setClaimConflict({ chatId, name: r.current?.name || 'outro atendente' }); return; }
+    mergeConversation(r.conversation);
+  };
+  const doPatch = async (chatId: string, patch: Record<string, any>) => {
+    try { mergeConversation((await api.patchConversation(chatId, patch)).conversation); } catch (e) {}
+  };
+  const doStatus = async (chatId: string, action: 'resolve' | 'reopen') => {
+    try { mergeConversation((await api.setConversationStatus(chatId, action)).conversation); } catch (e) {}
   };
 
   useEffect(() => {
     api.listTeamAgents().then(setTeamAgents).catch(() => {});
+  }, []);
+  useEffect(() => { loadInbox(); }, [showResolved]);
+  // relógio p/ os badges de tempo de espera
+  useEffect(() => {
+    const iv = setInterval(() => setNowTick(Math.floor(Date.now() / 1000)), 30000);
+    return () => clearInterval(iv);
   }, []);
 
   const handleToggleAI = async () => {
@@ -231,12 +262,18 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   useEffect(() => {
     loadWaChats();
 
-    const token = localStorage.getItem('cm_auth_token');
+    const token = auth.getToken();
     const es = new EventSource(`/api/whatsapp/events?token=${token}`);
 
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+
+        if (data.type === 'conversation_update') {
+          const p = data.payload;
+          if (p && p.chatId) setConversations(prev => applyUpdate(prev, p));
+          return;
+        }
 
         if (data.type === 'whatsapp_message') {
           const msg = data.payload;
@@ -311,75 +348,65 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   }, []);
 
   const firstColId = kanbanState.columns[0]?.id;
-  let mergedCards = waChats.map(chat => {
-      const chatId = typeof chat.id === 'object' ? chat.id._serialized : chat.id;
-      const existingCard = kanbanState.cards.find(c => c.id === chatId);
-      const details = chatDetailsMap[chatId] || {};
-      
+  const UNASSIGNED = '__unassigned__';
+
+  // fonte da verdade = conversas (wa_conversations via /api/inbox), enriquecidas
+  // com dados ao vivo do getChats (unread) e do chatDetailsMap (foto/nome).
+  const unreadByChat: Record<string, number> = {};
+  for (const chat of waChats) {
+      const id = typeof chat.id === 'object' ? chat.id._serialized : chat.id;
+      if (id) unreadByChat[id] = chat.unreadCount || 0;
+  }
+
+  type BoardCard = Conversation & { unreadCount: number; profilePicUrl?: string | null; displayName: string; waitMin: number };
+  let cardList: BoardCard[] = Object.values(conversations).map(c => {
+      const d = chatDetailsMap[c.chatId] || {};
       return {
-          id: chatId || '',
-          name: getContactDisplayLabel(chatId, details.name || chat.name || (typeof chat.id === 'object' ? chat.id.user : chat.id?.split('@')[0])),
-          unreadCount: chat.unreadCount,
-          lastMessage: details.lastMessage !== undefined ? details.lastMessage : chat.lastMessage,
-          lastMessageFromMe: details.lastMessageFromMe !== undefined ? details.lastMessageFromMe : chat.lastMessageFromMe,
-          profilePicUrl: details.profilePicUrl !== undefined ? details.profilePicUrl : chat.profilePicUrl,
-          timestamp: chat.timestamp,
-          colId: existingCard ? existingCard.colId : (firstColId || ''),
-          tagIds: existingCard ? existingCard.tagIds : [],
-          department: existingCard?.department,
-          assignedAgentId: existingCard?.assignedAgentId
+          ...c,
+          unreadCount: unreadByChat[c.chatId] || 0,
+          profilePicUrl: d.profilePicUrl ?? null,
+          displayName: getContactDisplayLabel(c.chatId, d.name || c.name || c.chatId.split('@')[0]),
+          lastMessage: d.lastMessage !== undefined ? d.lastMessage : (c.lastMessage || ''),
+          lastMessageFromMe: d.lastMessageFromMe !== undefined ? d.lastMessageFromMe : c.lastMessageFromMe,
+          waitMin: waitingMinutes(c, nowTick),
       };
   });
 
-  const mergedIds = new Set(mergedCards.map(c => c.id));
-  kanbanState.cards.forEach(card => {
-      if (!mergedIds.has(card.id)) {
-          const details = chatDetailsMap[card.id] || {};
-          mergedCards.push({
-              id: card.id,
-              name: getContactDisplayLabel(card.id, details.name || card.name || card.id.split('@')[0]),
-              unreadCount: 0,
-              lastMessage: details.lastMessage || '',
-              lastMessageFromMe: details.lastMessageFromMe || false,
-              profilePicUrl: details.profilePicUrl || null,
-              timestamp: 0,
-              colId: card.colId || (firstColId || ''),
-              tagIds: card.tagIds || [],
-              department: card.department,
-              assignedAgentId: card.assignedAgentId
-          });
-      }
-  });
-
-  const filteredCards = mergedCards.filter(card => {
-      // Filtro de atendimento (Ver: Todos / Meu setor / Atribuídos a mim)
-      if (viewFilter === 'mine' && card.assignedAgentId !== me?.id) return false;
-      if (viewFilter === 'my_dept') {
-          const dept = getDept(card.department);
-          const mineDept = (me?.department || '').toLowerCase();
-          if (!dept || !mineDept || dept.name.toLowerCase() !== mineDept) return false;
-      }
+  const visibleCards = cardList.filter(card => {
+      if (!showResolved && card.status === 'resolved') return false;
+      if (inboxFilter === 'mine' && card.assignedAgentId !== me?.id) return false;
+      if (inboxFilter === 'unassigned' && card.assignedAgentId != null) return false;
+      if (inboxFilter === 'waiting' && !card.waiting) return false;
+      if (deptFilter && card.department !== deptFilter) return false;
 
       if (!searchTerm) return true;
       const term = searchTerm.toLowerCase();
-
-      const safeName = card.name || '';
-      const safeId = card.id || '';
-
-      if (safeName.toLowerCase().includes(term)) return true;
-      if (safeId.toLowerCase().includes(term)) return true;
-
-      const hasMatchingTag = card.tagIds.some(tid => {
+      if ((card.displayName || '').toLowerCase().includes(term)) return true;
+      if ((card.chatId || '').toLowerCase().includes(term)) return true;
+      return card.tagIds.some(tid => {
           const tag = kanbanState.tags.find(t => t.id === tid);
           return tag && (tag.name || '').toLowerCase().includes(term);
       });
-      return hasMatchingTag;
+  });
+
+  const waitingCount = cardList.filter(c => c.status !== 'resolved' && c.waiting).length;
+  const unassignedCount = cardList.filter(c => c.status !== 'resolved' && c.assignedAgentId == null).length;
+
+  // colunas do board: "Não atribuídas" fixa + colunas configuradas
+  const boardColumns = [
+      { id: UNASSIGNED, title: 'Não atribuídas', color: '#94a3b8' },
+      ...kanbanState.columns,
+  ];
+  const cardsInColumn = (colId: string) => visibleCards.filter(card => {
+      if (colId === UNASSIGNED) return card.assignedAgentId == null;
+      if (card.assignedAgentId == null) return false;         // não-atribuídas só na 1ª coluna
+      return (card.colId || firstColId || '') === colId;
   });
 
   useEffect(() => {
      const fetchMissingInfo = async () => {
-         const missingIds = mergedCards
-             .map(c => c.id)
+         const missingIds = cardList
+             .map(c => c.chatId)
              .filter(id => !chatDetailsMap[id] || chatDetailsMap[id].profilePicUrl === undefined);
 
          if (missingIds.length === 0) return;
@@ -402,10 +429,8 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
          }
      };
 
-     if (mergedCards.length > 0) {
-         fetchMissingInfo();
-     }
-  }, [waChats, kanbanState.cards]);
+     if (cardList.length > 0) fetchMissingInfo();
+  }, [waChats, conversations]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -414,24 +439,16 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const handleDrop = async (e: React.DragEvent, colId: string) => {
     e.preventDefault();
     const chatId = e.dataTransfer.getData("chatId");
-    if (!chatId) return;
-
-    const newCards = [...kanbanState.cards];
-    const cardIdx = newCards.findIndex(c => c.id === chatId);
-    if (cardIdx >= 0) {
-        newCards[cardIdx].colId = colId;
-    } else {
-        newCards.push({ id: chatId, colId, tagIds: [], name: '' });
-    }
-    
-    await updateKanbanState({ ...kanbanState, cards: newCards });
+    if (!chatId || colId === UNASSIGNED) return;
+    await doPatch(chatId, { colId });
   };
 
+  // Layout do Kanban (colunas/tags/setores/limiares) — só o admin do .env persiste.
   const updateKanbanState = async (newState: WaKanbanState) => {
       onSaveSettings({ ...userSettings, waKanban: newState }); // otimista
       try {
           const r = await api.saveKanban(newState);
-          if (r?.waKanban) onSaveSettings({ ...userSettings, waKanban: r.waKanban }); // reconcilia (colaborador só grava cards)
+          if (r?.waKanban) onSaveSettings({ ...userSettings, waKanban: r.waKanban });
       } catch (e) {}
   };
 
@@ -446,19 +463,19 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
       return;
     }
 
-    if (!confirm(`Tem certeza que deseja buscar ${days} dias de mensagens para os ${kanbanState.cards.length} contatos do Kanban? Isso pode levar algum tempo.`)) {
+    const chatIds = Object.keys(conversations);
+    if (!confirm(`Tem certeza que deseja buscar ${days} dias de mensagens para as ${chatIds.length} conversas do Kanban? Isso pode levar algum tempo.`)) {
       return;
     }
 
     setIsSyncingAll(true);
     let successCount = 0;
-    
+
     try {
-      const token = localStorage.getItem('cm_auth_token');
-      for (let i = 0; i < kanbanState.cards.length; i++) {
-        const card = kanbanState.cards[i];
-        const chatId = card.id;
-        
+      const token = auth.getToken();
+      for (let i = 0; i < chatIds.length; i++) {
+        const chatId = chatIds[i];
+
         try {
           const res = await fetch(`/api/whatsapp/load-history/${chatId}?days=${days}&force=true`, {
             method: 'POST',
@@ -471,14 +488,14 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
             checkSyncStatus(chatId);
           }
         } catch (e) {
-          console.error(`Erro ao sincronizar ${card.name}:`, e);
+          console.error(`Erro ao sincronizar ${chatId}:`, e);
         }
-        
+
         // Small delay to avoid overwhelming the server/whatsapp connection
         await new Promise(r => setTimeout(r, 1000));
       }
-      
-      alert(`Sincronização concluída! ${successCount} de ${kanbanState.cards.length} contatos atualizados.`);
+
+      alert(`Sincronização concluída! ${successCount} de ${chatIds.length} conversas atualizadas.`);
       
       // Reload current chat if it's open
       if (activeChat) {
@@ -501,16 +518,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           const contact = await api.getWhatsAppContact(contactNumber);
           if (contact) {
               const newCardId = contact.id;
-              
-              const existsInKanban = kanbanState.cards.find(c => c.id === newCardId);
-              if (!existsInKanban) {
-                  const newCard: WaKanbanCard = { 
-                      id: newCardId, 
-                      tagIds: [], 
-                      colId: kanbanState.columns[0]?.id || '',
-                      name: contact.name || newCardId.split('@')[0]
-                  };
-                  await updateKanbanState({ ...kanbanState, cards: [...kanbanState.cards, newCard] });
+
+              // registra a conversa no inbox (idempotente)
+              if (!conversations[newCardId]) {
+                  await doPatch(newCardId, { name: contact.name || newCardId.split('@')[0], colId: kanbanState.columns[0]?.id || null });
               }
 
               setWaChats(prev => {
@@ -541,7 +552,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 
   // Função para carregar mensagens do banco
   const loadMessagesFromDb = async (chatId: string, before?: number): Promise<any[]> => {
-    const token = localStorage.getItem('cm_auth_token');
+    const token = auth.getToken();
     const url = before
       ? `/api/whatsapp/messages-db/${encodeURIComponent(chatId)}?limit=50&before=${before}`
       : `/api/whatsapp/messages-db/${encodeURIComponent(chatId)}?limit=50`;
@@ -555,7 +566,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   };
 
   const checkSyncStatus = async (chatId: string) => {
-    const token = localStorage.getItem('cm_auth_token');
+    const token = auth.getToken();
     const res = await fetch(`/api/whatsapp/sync-status/${chatId}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -652,7 +663,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
         );
         const beforeId = oldestMsg?.id?._serialized || oldestMsg?.id?.id || null;
 
-        const token = localStorage.getItem('cm_auth_token');
+        const token = auth.getToken();
         const res = await fetch(`/api/whatsapp/fetch-older/${encodeURIComponent(chatId)}`, {
           method: 'POST',
           headers: {
@@ -710,7 +721,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 
     setIsLoadingHistory(true);
     try {
-      const token = localStorage.getItem('cm_auth_token');
+      const token = auth.getToken();
       const res = await fetch(`/api/whatsapp/load-history/${chatId}?days=${days}&force=true`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
@@ -742,7 +753,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 
     setIsLoadingHistory(true);
     try {
-      const token = localStorage.getItem('cm_auth_token');
+      const token = auth.getToken();
       const res = await fetch(`/api/whatsapp/load-history/${chatId}`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
@@ -910,16 +921,33 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                   className="px-3 py-1.5 bg-transparent outline-none text-sm min-w-[180px]"
                />
            </div>
-           <select
-             value={viewFilter}
-             onChange={e => setViewFilter(e.target.value as any)}
-             title="Filtrar conversas"
-             className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:border-blue-500"
-           >
-             <option value="all">Ver: Todos</option>
-             <option value="my_dept">Meu setor</option>
-             <option value="mine">Atribuídos a mim</option>
-           </select>
+           <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+             {([
+               ['all', 'Todas', null],
+               ['mine', 'Minhas', null],
+               ['unassigned', 'Não atribuídas', unassignedCount],
+               ['waiting', 'Aguardando', waitingCount],
+             ] as [typeof inboxFilter, string, number | null][]).map(([id, label, count]) => (
+               <button key={id} onClick={() => setInboxFilter(id)}
+                 className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1 ${
+                   inboxFilter === id ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>
+                 {label}
+                 {count ? <span className={`px-1 rounded-full text-[10px] ${id === 'waiting' ? 'bg-red-100 text-red-600' : 'bg-gray-200 text-gray-600'}`}>{count}</span> : null}
+               </button>
+             ))}
+           </div>
+           {departments.length > 0 && (
+             <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}
+               className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:border-blue-500">
+               <option value="">Todos os setores</option>
+               {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+             </select>
+           )}
+           <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+             <input type="checkbox" checked={showResolved} onChange={e => setShowResolved(e.target.checked)}
+               className="rounded text-blue-600 focus:ring-blue-500" />
+             Resolvidas
+           </label>
            <div className="flex bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
                <input 
                   type="text"
@@ -948,6 +976,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
            >
               {isSyncingAll ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
            </button>
+           {me?.isEnvAdmin && (
            <button
              onClick={handleToggleAI}
              title={aiEnabled ? 'IA Ativada — clique para desativar' : 'IA Desativada — clique para ativar'}
@@ -963,7 +992,8 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                className={`w-2 h-2 rounded-full ${aiEnabled ? 'bg-green-500' : 'bg-gray-400'}`}
              />
            </button>
-           
+           )}
+
            <button
              onClick={() => setIsTasksDrawerOpen(true)}
              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors text-xs font-semibold ml-auto"
@@ -975,184 +1005,178 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto flex gap-3 p-3">
-          {kanbanState.columns.map(col => {
-              const colCards = filteredCards.filter(c => c.colId === col.id);
-              
+          {boardColumns.map(col => {
+              const isQueue = col.id === UNASSIGNED;
+              const colCards = cardsInColumn(col.id);
               return (
-                  <div 
-                      key={col.id} 
-                      className="flex-shrink-0 w-52 bg-gray-100 rounded-xl p-2 flex flex-col h-full overflow-hidden"
+                  <div
+                      key={col.id}
+                      className={`flex-shrink-0 w-56 rounded-xl p-2 flex flex-col h-full overflow-hidden ${isQueue ? 'bg-amber-50 border border-amber-200' : 'bg-gray-100'}`}
                       onDragOver={handleDragOver}
                       onDrop={(e) => handleDrop(e, col.id)}
                   >
                       <div className="mb-2 pb-1.5 border-b-2 flex items-center justify-between" style={{ borderColor: col.color }}>
                           <h3 className="font-bold text-gray-700 flex items-center gap-1.5 text-xs">
                              {col.title}
-                             <span className="bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded-full text-[10px] font-semibold">{colCards.length}</span>
+                             <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${isQueue ? 'bg-amber-200 text-amber-800' : 'bg-gray-200 text-gray-600'}`}>{colCards.length}</span>
                           </h3>
                       </div>
-                      
+
                       <div className="flex-1 overflow-y-auto space-y-2 pr-1.5 scrollbar-thin">
-                          {colCards.map(card => (
-                              <div 
-                                  key={card.id}
-                                  draggable
-                                  onDragStart={(e) => {
-                                      e.dataTransfer.setData("chatId", card.id);
-                                      e.dataTransfer.effectAllowed = "move";
-                                  }}
-                                  onClick={() => openChat(card)}
-                                  className="bg-white p-2.5 rounded-lg shadow-sm border border-gray-100 cursor-pointer hover:shadow-md hover:border-blue-300 transition-all active:cursor-grabbing border-l-4 group"
-                                  style={{ borderLeftColor: col.color }}
+                          {colCards.map(card => {
+                              const dept = getDept(card.department);
+                              const agent = getAgent(card.assignedAgentId);
+                              const u = card.waiting ? urgency(card.waitMin, yellowMin, redMin) : 'none';
+                              const others = (card.viewers || []).filter(v => v.agentId !== me?.id);
+                              return (
+                              <div
+                                  key={card.chatId}
+                                  draggable={!isQueue}
+                                  onDragStart={(e) => { e.dataTransfer.setData("chatId", card.chatId); e.dataTransfer.effectAllowed = "move"; }}
+                                  onClick={() => openChat({ id: card.chatId, name: card.displayName })}
+                                  className={`bg-white p-2.5 rounded-lg shadow-sm border cursor-pointer hover:shadow-md hover:border-blue-300 transition-all border-l-4 group ${card.status === 'resolved' ? 'opacity-60' : ''} ${card.unreadCount > 0 ? 'border-green-300' : 'border-gray-100'}`}
+                                  style={{ borderLeftColor: dept?.color || col.color }}
                               >
-                                  <div className="flex items-center gap-2 mb-1.5">
+                                  <div className="flex items-center gap-2 mb-1">
                                       <div className="w-7 h-7 rounded-full bg-gray-100 flex-shrink-0 overflow-hidden border border-gray-200">
-                                          {card.profilePicUrl ? (
-                                              <img src={card.profilePicUrl} alt={card.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                          ) : (
-                                              <User className="w-full h-full p-1.5 text-gray-400" />
-                                          )}
+                                          {card.profilePicUrl ? <img src={card.profilePicUrl} alt={card.displayName} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <User className="w-full h-full p-1.5 text-gray-400" />}
                                       </div>
                                       <div className="flex-1 min-w-0">
-                                          <div className="flex justify-between items-start">
-                                              <h4 className="font-semibold text-gray-800 text-[11px] leading-tight truncate">{card.name}</h4>
-                                              {card.unreadCount > 0 && (
-                                                  <span className="bg-green-500 text-white text-[9px] px-1 py-px rounded-full font-bold ml-1">
-                                                      {card.unreadCount}
-                                                  </span>
-                                              )}
-                                          </div>
+                                          <h4 className="font-semibold text-gray-800 text-[11px] leading-tight truncate">{card.displayName}</h4>
+                                          <p className="text-[10px] text-gray-500 truncate leading-tight flex items-center gap-1">
+                                              {card.lastMessageFromMe && <CheckCircle2 className="w-2.5 h-2.5 text-blue-500 flex-shrink-0" />}
+                                              {card.lastMessage || 'Sem mensagem'}
+                                          </p>
                                       </div>
+                                      {card.unreadCount > 0 && <span className="bg-green-500 text-white text-[9px] px-1 py-px rounded-full font-bold">{card.unreadCount}</span>}
                                   </div>
 
-                                  <div className="flex items-center gap-1 text-[10px] text-gray-500 mb-1.5 truncate">
-                                      {card.lastMessageFromMe && <CheckCircle2 className="w-3 h-3 text-blue-500 flex-shrink-0" />}
-                                      <p className="truncate leading-tight">{card.lastMessage || 'Sem mensagem'}</p>
+                                  {/* linha de status: espera + setor + resolvida */}
+                                  <div className="flex items-center gap-1 flex-wrap mb-1.5">
+                                      {card.waiting && (
+                                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold flex items-center gap-0.5 ${URGENCY_CLS[u]}`}>
+                                              <Clock className="w-2.5 h-2.5" /> {waitingLabel(card.waitMin) || 'agora'}
+                                          </span>
+                                      )}
+                                      {dept && (
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold flex items-center gap-1"
+                                              style={{ backgroundColor: `${dept.color}1a`, color: dept.color }}>
+                                              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: dept.color }} />{dept.name}
+                                          </span>
+                                      )}
+                                      {card.status === 'resolved' && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-semibold">Resolvida</span>}
                                   </div>
 
-                                  {(getDept(card.department) || getAgent(card.assignedAgentId)) && (
-                                    <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                                      {getDept(card.department) && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold flex items-center gap-1"
-                                          style={{ backgroundColor: `${getDept(card.department)!.color}1a`, color: getDept(card.department)!.color }}>
-                                          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getDept(card.department)!.color }} />
-                                          {getDept(card.department)!.name}
-                                        </span>
-                                      )}
-                                      {getAgent(card.assignedAgentId) && (
-                                        <span className="text-[9px] px-1 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold flex items-center gap-1" title={`Responsável: ${getAgent(card.assignedAgentId)!.name}`}>
-                                          <span className="w-3.5 h-3.5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[7px]">{initials(getAgent(card.assignedAgentId)!.name)}</span>
-                                          <span className="truncate max-w-[80px]">{getAgent(card.assignedAgentId)!.name}</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  <div className="flex items-center justify-between mt-2">
-                                      <div className="flex flex-wrap gap-1 items-center flex-1 min-w-0">
+                                  {card.tagIds.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mb-1.5">
                                           {card.tagIds.map(tid => {
                                               const tag = kanbanState.tags.find(t => t.id === tid);
                                               if (!tag) return null;
-                                              return (
-                                                <span key={tag.id} className="text-[9px] px-1.5 py-0.5 border rounded-full flex items-center gap-1 font-medium bg-gray-50 max-w-full truncate" style={{borderColor: tag.color, color: tag.color}}>
-                                                    <div className="w-1 h-1 rounded-full" style={{backgroundColor: tag.color}}></div>
-                                                    <span className="truncate">{tag.name}</span>
-                                                </span>
-                                              );
+                                              return <span key={tag.id} className="text-[9px] px-1.5 py-0.5 border rounded-full font-medium truncate" style={{ borderColor: tag.color, color: tag.color }}>{tag.name}</span>;
                                           })}
                                       </div>
+                                  )}
 
-                                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                                          <div className="relative">
-                                              <button 
-                                                  onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      setTagMenuCardId(tagMenuCardId === card.id ? null : card.id);
-                                                  }}
-                                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
-                                                  title="Adicionar Tag"
-                                              >
-                                                  <Plus className="w-4 h-4" />
+                                  <div className="flex items-center justify-between">
+                                      {/* responsável / atender */}
+                                      {agent ? (
+                                          <span className="text-[9px] px-1 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold flex items-center gap-1" title={`Responsável: ${agent.name}`}>
+                                              <span className="w-3.5 h-3.5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[7px]">{initials(agent.name)}</span>
+                                              <span className="truncate max-w-[70px]">{agent.name}</span>
+                                          </span>
+                                      ) : (
+                                          <button onClick={(e) => { e.stopPropagation(); doClaim(card.chatId); }}
+                                              className="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-white font-bold hover:bg-blue-700">
+                                              Atender
+                                          </button>
+                                      )}
+
+                                      <div className="flex items-center gap-0.5">
+                                          {/* avatares de quem está vendo */}
+                                          {others.slice(0, 3).map(v => (
+                                              <span key={v.agentId} title={`${v.name} está vendo`} className="w-4 h-4 -ml-1 first:ml-0 rounded-full bg-amber-400 text-white text-[7px] flex items-center justify-center border border-white">{initials(v.name)}</span>
+                                          ))}
+                                          {/* menu de ações */}
+                                          <div className="relative opacity-0 group-hover:opacity-100 transition-opacity">
+                                              <button onClick={(e) => { e.stopPropagation(); setTagMenuCardId(tagMenuCardId === card.chatId ? null : card.chatId); }}
+                                                  className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full">
+                                                  <MoreHorizontal className="w-4 h-4" />
                                               </button>
-                                              
-                                              {tagMenuCardId === card.id && (
-                                                  <div className="absolute right-0 bottom-full mb-2 bg-white border border-gray-100 shadow-xl rounded-lg p-2 w-56 z-50 animate-in fade-in zoom-in duration-150" onClick={e => e.stopPropagation()}>
-                                                      <div className="text-xs font-semibold text-gray-500 mb-1 px-1">Setor</div>
-                                                      <select
-                                                          value={card.department || ''}
-                                                          onChange={(e) => patchCard(card.id, card.name, { department: e.target.value || undefined })}
-                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 mb-2 outline-none focus:border-blue-500"
-                                                      >
+                                              {tagMenuCardId === card.chatId && (
+                                                  <div className="absolute right-0 bottom-full mb-2 bg-white border border-gray-100 shadow-xl rounded-lg p-2 w-56 z-50" onClick={e => e.stopPropagation()}>
+                                                      <div className="flex gap-1 mb-2">
+                                                          {card.status === 'resolved'
+                                                              ? <button onClick={() => { doStatus(card.chatId, 'reopen'); setTagMenuCardId(null); }} className="flex-1 text-xs py-1.5 rounded bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100">Reabrir</button>
+                                                              : <button onClick={() => { doStatus(card.chatId, 'resolve'); setTagMenuCardId(null); }} className="flex-1 text-xs py-1.5 rounded bg-green-50 text-green-700 font-semibold hover:bg-green-100">Resolver</button>}
+                                                          <button onClick={() => { setTransferChatId(card.chatId); setTagMenuCardId(null); }} className="flex-1 text-xs py-1.5 rounded bg-gray-50 text-gray-700 font-semibold hover:bg-gray-100">Transferir</button>
+                                                      </div>
+                                                      <div className="text-[10px] font-semibold text-gray-400 uppercase mb-1 px-1">Setor</div>
+                                                      <select value={card.department || ''} onChange={(e) => doPatch(card.chatId, { department: e.target.value || null })}
+                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1 mb-2 outline-none focus:border-blue-500">
                                                           <option value="">— sem setor —</option>
                                                           {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                                                       </select>
-                                                      <div className="text-xs font-semibold text-gray-500 mb-1 px-1">Responsável</div>
-                                                      <select
-                                                          value={card.assignedAgentId || ''}
-                                                          onChange={(e) => patchCard(card.id, card.name, { assignedAgentId: e.target.value ? Number(e.target.value) : undefined })}
-                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 mb-2 outline-none focus:border-blue-500"
-                                                      >
+                                                      <div className="text-[10px] font-semibold text-gray-400 uppercase mb-1 px-1">Responsável</div>
+                                                      <select value={card.assignedAgentId || ''} onChange={(e) => doPatch(card.chatId, { assignedAgentId: e.target.value ? Number(e.target.value) : null })}
+                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1 mb-2 outline-none focus:border-blue-500">
                                                           <option value="">— ninguém —</option>
-                                                          {teamAgents.map(a => <option key={a.id} value={a.id}>{a.name}{a.department ? ` (${a.department})` : ''}</option>)}
+                                                          {teamAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                                                       </select>
-                                                      <div className="text-xs font-semibold text-gray-500 mb-2 px-1">Tags</div>
-                                                      <div className="max-h-40 overflow-y-auto space-y-1 scrollbar-thin">
-                                                          {kanbanState.tags.map(t => {
-                                                              const hasTag = card.tagIds.includes(t.id);
-                                                              return (
-                                                                  <label key={t.id} className="flex items-center gap-2 p-1.5 hover:bg-gray-50 rounded cursor-pointer text-sm transition-colors">
-                                                                      <input type="checkbox" checked={!!hasTag} onChange={(e) => {
-                                                                          const newCards = [...kanbanState.cards];
-                                                                          let cIdx = newCards.findIndex(c => c.id === card.id);
-                                                                          if(cIdx < 0) {
-                                                                              newCards.push({ id: card.id, colId: col.id, tagIds: [], name: card.name });
-                                                                              cIdx = newCards.length - 1;
-                                                                          }
-                                                                          let tags = newCards[cIdx].tagIds;
-                                                                          if(e.target.checked) tags.push(t.id);
-                                                                          else tags = tags.filter(id => id !== t.id);
-                                                                          newCards[cIdx].tagIds = tags;
-                                                                          updateKanbanState({...kanbanState, cards: newCards});
-                                                                      }} className="rounded text-blue-600 focus:ring-blue-500"/>
-                                                                      <div className="w-2 h-2 rounded-full" style={{backgroundColor: t.color}}></div>
-                                                                      <span className="font-medium text-gray-700 truncate">{t.name}</span>
-                                                                  </label>
-                                                              );
-                                                          })}
-                                                          {kanbanState.tags.length === 0 && (
-                                                              <div className="text-xs text-gray-400 p-1">Nenhuma tag criada</div>
-                                                          )}
+                                                      <div className="text-[10px] font-semibold text-gray-400 uppercase mb-1 px-1">Tags</div>
+                                                      <div className="max-h-32 overflow-y-auto space-y-0.5">
+                                                          {kanbanState.tags.map(t => (
+                                                              <label key={t.id} className="flex items-center gap-2 p-1 hover:bg-gray-50 rounded cursor-pointer text-sm">
+                                                                  <input type="checkbox" checked={card.tagIds.includes(t.id)} onChange={(e) => {
+                                                                      const next = e.target.checked ? [...card.tagIds, t.id] : card.tagIds.filter(x => x !== t.id);
+                                                                      doPatch(card.chatId, { tagIds: next });
+                                                                  }} className="rounded text-blue-600 focus:ring-blue-500" />
+                                                                  <span className="font-medium text-gray-700 truncate" style={{ color: t.color }}>{t.name}</span>
+                                                              </label>
+                                                          ))}
+                                                          {kanbanState.tags.length === 0 && <div className="text-xs text-gray-400 p-1">Nenhuma tag</div>}
                                                       </div>
                                                   </div>
                                               )}
                                           </div>
-                                          <button 
-                                              onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  if (confirm('Remover esta conversa do Kanban?')) {
-                                                      const newCards = kanbanState.cards.filter(c => c.id !== card.id);
-                                                      updateKanbanState({...kanbanState, cards: newCards});
-                                                  }
-                                              }}
-                                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                                              title="Remover do Kanban"
-                                          >
-                                              <Trash2 className="w-4 h-4" />
-                                          </button>
                                       </div>
                                   </div>
                               </div>
-                          ))}
+                          )})}
+                          {colCards.length === 0 && <p className="text-[10px] text-gray-400 text-center py-4">Vazio</p>}
                       </div>
                   </div>
               );
           })}
           {kanbanState.columns.length === 0 && (
               <div className="flex items-center justify-center w-full h-40 text-gray-400">
-                  <p>Nenhuma coluna configurada. Clique na engrenagem para adicionar.</p>
+                  <p>Nenhuma coluna configurada. {me?.isEnvAdmin ? 'Clique na engrenagem para adicionar.' : 'Peça ao administrador para configurar.'}</p>
               </div>
           )}
       </div>
+
+      {/* Modal de transferência */}
+      {transferChatId && (
+          <TransferModal
+              chatId={transferChatId}
+              current={conversations[transferChatId]}
+              agents={teamAgents}
+              departments={departments}
+              onClose={() => setTransferChatId(null)}
+              onDone={(c) => { mergeConversation(c); setTransferChatId(null); }}
+          />
+      )}
+      {claimConflict && (
+          <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+                  <h3 className="font-bold text-gray-800">Conversa já atribuída</h3>
+                  <p className="text-sm text-gray-600 mt-1"><strong>{claimConflict.name}</strong> já está atendendo esta conversa. Assumir mesmo assim?</p>
+                  <div className="flex justify-end gap-2 mt-5">
+                      <button onClick={() => setClaimConflict(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
+                      <button onClick={() => { doClaim(claimConflict.chatId, true); setClaimConflict(null); }} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700">Assumir</button>
+                  </div>
+              </div>
+          </div>
+      )}
 
       {/* Kanban Config Modal */}
       {isConfigModalOpen && (
@@ -1247,6 +1271,26 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                              </button>
                           </div>
                       </div>
+
+                      {/* Urgência */}
+                      <div>
+                          <h4 className="font-semibold text-gray-700 mb-1 border-b pb-2">Tempo de resposta</h4>
+                          <p className="text-xs text-gray-400 mb-3">A partir de quantos minutos sem responder ao cliente o card fica amarelo / vermelho.</p>
+                          <div className="flex gap-4">
+                              <label className="text-sm text-gray-600 flex items-center gap-2">
+                                  Amarelo após
+                                  <input type="number" min={1} value={yellowMin}
+                                      onChange={e => updateKanbanState({ ...kanbanState, urgencyYellowMin: Math.max(1, Number(e.target.value) || 15) })}
+                                      className="w-20 border rounded px-2 py-1 outline-none focus:border-blue-500" /> min
+                              </label>
+                              <label className="text-sm text-gray-600 flex items-center gap-2">
+                                  Vermelho após
+                                  <input type="number" min={1} value={redMin}
+                                      onChange={e => updateKanbanState({ ...kanbanState, urgencyRedMin: Math.max(1, Number(e.target.value) || 30) })}
+                                      className="w-20 border rounded px-2 py-1 outline-none focus:border-blue-500" /> min
+                              </label>
+                          </div>
+                      </div>
                   </div>
               </div>
           </div>
@@ -1292,59 +1336,45 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                       <div className="flex items-center gap-2">
                            {(() => {
                                const acid = activeChat.id._serialized || activeChat.id;
-                               const acard = kanbanState.cards.find(c => c.id === acid);
+                               const ac = conv(acid);
+                               const acAgent = getAgent(ac?.assignedAgentId);
                                return (
                                  <>
-                                   <select
-                                     value={acard?.department || ''}
-                                     onChange={(e) => patchCard(acid, activeChat.name, { department: e.target.value || undefined })}
-                                     title="Setor da conversa"
-                                     className="text-xs border rounded-md px-2 py-1.5 bg-white outline-none focus:border-blue-500"
-                                   >
+                                   {ac?.status === 'resolved'
+                                     ? <button onClick={() => doStatus(acid, 'reopen')} className="text-xs px-2.5 py-1.5 rounded-md bg-blue-50 text-blue-700 font-semibold border border-blue-200">Reabrir</button>
+                                     : <button onClick={() => doStatus(acid, 'resolve')} className="text-xs px-2.5 py-1.5 rounded-md bg-green-50 text-green-700 font-semibold border border-green-200">Resolver</button>}
+                                   {acAgent
+                                     ? <button onClick={() => setTransferChatId(acid)} title={`Responsável: ${acAgent.name}`} className="text-xs px-2 py-1.5 rounded-md bg-white border flex items-center gap-1">
+                                         <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] flex items-center justify-center">{initials(acAgent.name)}</span>
+                                         Transferir
+                                       </button>
+                                     : <button onClick={() => doClaim(acid)} className="text-xs px-2.5 py-1.5 rounded-md bg-blue-600 text-white font-semibold">Atender</button>}
+                                   <select value={ac?.department || ''} onChange={(e) => doPatch(acid, { department: e.target.value || null })}
+                                     title="Setor" className="text-xs border rounded-md px-2 py-1.5 bg-white outline-none focus:border-blue-500">
                                      <option value="">Setor…</option>
                                      {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                                    </select>
-                                   <select
-                                     value={acard?.assignedAgentId || ''}
-                                     onChange={(e) => patchCard(acid, activeChat.name, { assignedAgentId: e.target.value ? Number(e.target.value) : undefined })}
-                                     title="Colaborador responsável"
-                                     className="text-xs border rounded-md px-2 py-1.5 bg-white outline-none focus:border-blue-500 max-w-[130px]"
-                                   >
-                                     <option value="">Responsável…</option>
-                                     {teamAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                                   </select>
+                                   <div className="relative group">
+                                       <button className="text-gray-500 hover:text-gray-700 bg-white p-1.5 rounded-md border text-xs">Tags</button>
+                                       <div className="absolute right-0 top-full mt-1 bg-white border shadow-lg rounded-lg p-2 w-48 hidden group-hover:block z-50">
+                                          {kanbanState.tags.map(t => {
+                                              const has = ac?.tagIds?.includes(t.id);
+                                              return (
+                                                  <label key={t.id} className="flex items-center gap-2 p-1 hover:bg-gray-50 cursor-pointer text-sm">
+                                                      <input type="checkbox" checked={!!has} onChange={(e) => {
+                                                          const cur = ac?.tagIds || [];
+                                                          doPatch(acid, { tagIds: e.target.checked ? [...cur, t.id] : cur.filter(x => x !== t.id) });
+                                                      }} />
+                                                      <span style={{ color: t.color }} className="font-medium">{t.name}</span>
+                                                  </label>
+                                              );
+                                          })}
+                                          {kanbanState.tags.length === 0 && <div className="text-xs text-gray-400 p-1">Nenhuma tag</div>}
+                                       </div>
+                                   </div>
                                  </>
                                );
                            })()}
-                           <div className="relative group">
-                               <button className="text-gray-500 hover:text-gray-700 bg-white p-1.5 rounded-md border text-xs flex items-center gap-1">
-                                  Tags
-                               </button>
-                               <div className="absolute right-0 top-full mt-1 bg-white border shadow-lg rounded-lg p-2 w-48 hidden group-hover:block z-50">
-                                  {kanbanState.tags.map(t => {
-                                      const cardInfo = kanbanState.cards.find(c => c.id === activeChat.id._serialized);
-                                      const hasTag = cardInfo?.tagIds.includes(t.id);
-                                      return (
-                                          <label key={t.id} className="flex items-center gap-2 p-1 hover:bg-gray-50 cursor-pointer text-sm">
-                                              <input type="checkbox" checked={!!hasTag} onChange={(e) => {
-                                                  const newCards = [...kanbanState.cards];
-                                                  let cIdx = newCards.findIndex(c => c.id === activeChat.id._serialized);
-                                                  if(cIdx < 0) {
-                                                      newCards.push({ id: activeChat.id._serialized, colId: firstColId || '', tagIds: [], name: activeChat.name });
-                                                      cIdx = newCards.length - 1;
-                                                  }
-                                                  let tags = newCards[cIdx].tagIds;
-                                                  if(e.target.checked) tags.push(t.id);
-                                                  else tags = tags.filter(id => id !== t.id);
-                                                  newCards[cIdx].tagIds = tags;
-                                                  updateKanbanState({...kanbanState, cards: newCards});
-                                              }} />
-                                              <span style={{color: t.color}} className="font-medium">{t.name}</span>
-                                          </label>
-                                      );
-                                  })}
-                               </div>
-                           </div>
                            <button onClick={() => setActiveChat(null)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6"/></button>
                       </div>
                   </div>
@@ -1480,17 +1510,17 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                                           <audio 
                                                               controls 
                                                               className="mt-1 h-10 w-full max-w-[240px]" 
-                                                              src={`/api/whatsapp/media/${msgIdStr}?token=${localStorage.getItem('cm_auth_token')}`}
+                                                              src={`/api/whatsapp/media/${msgIdStr}?token=${auth.getToken()}`}
                                                               preload="metadata"
                                                           />
                                                       )}
                                                       {(msg.type === 'image' || msg.type === 'video') && msgIdStr && !isOptimistic && (
                                                           <img 
-                                                              src={`/api/whatsapp/media/${msgIdStr}?token=${localStorage.getItem('cm_auth_token')}`} 
+                                                              src={`/api/whatsapp/media/${msgIdStr}?token=${auth.getToken()}`} 
                                                               alt="Media" 
                                                               className="mt-2 rounded-lg max-h-[200px] object-cover cursor-pointer hover:opacity-90 border border-gray-200" 
                                                               onClick={() => {
-                                                                  setExpandedMediaUrl(`/api/whatsapp/media/${msgIdStr}?token=${localStorage.getItem('cm_auth_token')}`);
+                                                                  setExpandedMediaUrl(`/api/whatsapp/media/${msgIdStr}?token=${auth.getToken()}`);
                                                                   setExpandedMediaType(msg.type as 'image' | 'video');
                                                               }}
                                                               onError={(e) => { e.currentTarget.style.display = 'none'; }}
@@ -1506,7 +1536,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                                           <div className="flex gap-2 mt-2">
                                                               <button 
                                                                   onClick={() => {
-                                                                      setExpandedMediaUrl(`/api/whatsapp/media/${msgIdStr}?token=${localStorage.getItem('cm_auth_token')}`);
+                                                                      setExpandedMediaUrl(`/api/whatsapp/media/${msgIdStr}?token=${auth.getToken()}`);
                                                                       setExpandedMediaType('document');
                                                                   }}
                                                                   className="flex-1 flex items-center justify-center p-2 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 text-blue-700 text-sm font-medium transition-colors gap-1"
@@ -1517,7 +1547,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                                                   </span>
                                                               </button>
                                                               <a
-                                                                  href={`/api/whatsapp/media/${msgIdStr}?token=${localStorage.getItem('cm_auth_token')}`}
+                                                                  href={`/api/whatsapp/media/${msgIdStr}?token=${auth.getToken()}`}
                                                                   download={docFilename}
                                                                   className="flex items-center justify-center p-2 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 text-gray-600 text-sm transition-colors"
                                                                   title={`Baixar: ${docFilename}`}
@@ -1941,6 +1971,63 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
               </div>
           </div>
       )}
+    </div>
+  );
+};
+
+// ─── Modal de transferência de conversa ─────────────────────────────────────
+const TransferModal: React.FC<{
+  chatId: string;
+  current?: Conversation;
+  agents: { id: number; name: string; department: string | null }[];
+  departments: { id: string; name: string; color: string }[];
+  onClose: () => void;
+  onDone: (c: Conversation) => void;
+}> = ({ chatId, current, agents, departments, onClose, onDone }) => {
+  const [toAgentId, setToAgentId] = useState<string>(current?.assignedAgentId ? String(current.assignedAgentId) : '');
+  const [toDepartment, setToDepartment] = useState<string>(current?.department || '');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      const r = await api.transferConversation(chatId, {
+        toAgentId: toAgentId ? Number(toAgentId) : null,
+        toDepartment: toDepartment || null,
+        note: note.trim() || undefined,
+      });
+      onDone(r.conversation);
+    } catch (e) { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+        <h3 className="font-bold text-gray-800 mb-4">Transferir conversa</h3>
+        <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Para o setor</label>
+        <select value={toDepartment} onChange={e => setToDepartment(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-3 outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">— manter —</option>
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Para o colaborador</label>
+        <select value={toAgentId} onChange={e => setToAgentId(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-3 outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">— ninguém (fila) —</option>
+          {agents.map(a => <option key={a.id} value={a.id}>{a.name}{a.department ? ` (${a.department})` : ''}</option>)}
+        </select>
+        <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Nota interna (opcional)</label>
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+          placeholder="Contexto pro próximo atendente..." />
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-60">
+            {saving ? 'Transferindo...' : 'Transferir'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

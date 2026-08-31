@@ -127,8 +127,33 @@ export interface WaKanbanCard {
 export interface WaKanbanState {
   columns: WaKanbanColumn[];
   tags: WaKanbanTag[];
-  cards: WaKanbanCard[];
+  cards: WaKanbanCard[];              // legado — os dados de conversa vivem em wa_conversations
   departments?: WaKanbanDepartment[];
+  urgencyYellowMin?: number;          // min. sem resposta -> amarelo (padrão 15)
+  urgencyRedMin?: number;             // min. sem resposta -> vermelho (padrão 30)
+}
+
+export type ConversationStatus = 'open' | 'pending' | 'resolved';
+
+// Conversa de atendimento (GET /api/inbox). Espelha wa_conversations + dados ao vivo.
+export interface Conversation {
+  chatId: string;
+  name: string | null;
+  colId: string | null;
+  department: string | null;         // id de WaKanbanDepartment
+  assignedAgentId: number | null;
+  status: ConversationStatus;
+  tagIds: string[];
+  note: string;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+  lastActivityAt: number | null;
+  waiting: boolean;                  // cliente esperando resposta
+  waitingSince: number | null;      // unix ts da última msg do cliente sem resposta
+  resolvedAt: string | null;
+  lastMessage?: string;
+  lastMessageFromMe?: boolean;
+  viewers?: { agentId: number; name: string; department: string | null; since: number }[];
 }
 
 export interface UserSettings {

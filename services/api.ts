@@ -81,9 +81,36 @@ export const api = {
     return handleResponse(res);
   },
 
-  // salva o board do Kanban (colaborador só persiste os cards; admin persiste tudo)
+  // layout do Kanban — colunas/tags/setores/limiares (só admin do .env)
   saveKanban: async (waKanban: any): Promise<{ success: boolean; waKanban: any }> => {
     const res = await fetch(`${API_URL}/kanban`, { method: 'PUT', headers: getHeaders(), body: JSON.stringify(waKanban) });
+    return handleResponse(res);
+  },
+
+  // --- Inbox de atendimento (conversas) ---
+  getInbox: async (params: { filter?: string; department?: string; resolved?: boolean } = {}): Promise<any[]> => {
+    const q = new URLSearchParams();
+    if (params.filter) q.set('filter', params.filter);
+    if (params.department) q.set('department', params.department);
+    if (params.resolved) q.set('resolved', '1');
+    const res = await fetch(`${API_URL}/inbox?${q}`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+  patchConversation: async (chatId: string, patch: Record<string, any>): Promise<{ conversation: any }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}`, { method: 'PATCH', headers: getHeaders(), body: JSON.stringify(patch) });
+    return handleResponse(res);
+  },
+  claimConversation: async (chatId: string, force = false): Promise<{ conversation?: any; conflict?: boolean; current?: { agentId: number; name: string } }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}/claim`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ force }) });
+    if (res.status === 409) return res.json();
+    return handleResponse(res);
+  },
+  setConversationStatus: async (chatId: string, action: 'resolve' | 'reopen'): Promise<{ conversation: any }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}/${action}`, { method: 'POST', headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+  transferConversation: async (chatId: string, payload: { toAgentId?: number | null; toDepartment?: string | null; note?: string }): Promise<{ conversation: any }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}/transfer`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
     return handleResponse(res);
   },
 

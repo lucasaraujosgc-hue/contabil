@@ -80,6 +80,8 @@ Lucas Araújo`,
       { id: 'd_financeiro', name: 'Financeiro', color: '#d97706' },
       { id: 'd_atendimento', name: 'Atendimento', color: '#0891b2' }
     ],
+    urgencyYellowMin: 15,
+    urgencyRedMin: 30,
     cards: []
   }
 };
