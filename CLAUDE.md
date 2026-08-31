@@ -171,11 +171,17 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
   reintroduzir:
   - `safeSendMessage` faz **uma** tentativa e propaga o erro. **Nunca** reenviar
     no `catch` (frame desanexado depois do envio → retry dobra a mensagem).
-  - `send-documents` pega `acquireSendLock(req.user)` (409 se ocupado), checa
-    `res` abortado no loop, e usa `wasRecentlySent`/`markSent` (`sendLock.js`,
-    TTL 10 min) por `chatId`+hash do texto/mídia.
+  - O loop de envio vive em `server/services/sendJobs.js` (`runSendDocuments`),
+    usado pelo modo síncrono e pelo job de massa. Usa `acquireSendLock(req.user)`
+    (409 se ocupado), `wasRecentlySent`/`markSent` (`sendLock.js`, TTL 10 min) por
+    `chatId`+hash, e `withTimeout` 40s por mensagem.
+  - `POST /api/send-documents` com `isBulk` → **202 `{ jobId }`** e processa em
+    background segurando a trava até acabar; `GET .../status/:jobId` e
+    `POST .../cancel/:jobId`. Sem `isBulk` → síncrono (aborta o loop se `res` cair).
   - `cron` **reagenda/desativa o `scheduled_messages` ANTES de enviar** — senão um
     erro no meio do lote reenvia tudo no tick seguinte (60s).
+  - `sent_logs.sentAt` é **TEXT** — gravar ISO string por parâmetro, nunca
+    `datetime('now')`/`now()` (o Postgres recusa timestamptz → text).
 
 ## Comandos
 

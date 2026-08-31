@@ -51,6 +51,8 @@ server/
                              save*ToDb, upsertContactCache, sendDailySummaryToUser
     aiService.js             ai (Gemini), assistantTools, executeTool, processAI
     cronService.js           startCron() — tick a cada 60s (mensagens agendadas)
+    sendLock.js              trava anti-duplicação + dedupe de envio (em memória)
+    sendJobs.js              runSendDocuments (loop de envio) + job store do envio em massa
     presence.js              "quem está com a conversa aberta" (em memória, TTL 60s)
 api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado antes do gate)
 ```
@@ -146,6 +148,10 @@ docker run -p 3000:3000 --env-file .env -v cm_data:/app/data contabil-manager
 - Não há mais módulo nativo (o `pg` é JS puro) — o build não precisa de `python3/make/g++`.
 - Atrás de proxy: `TRUST_PROXY=1` (padrão). O link do convite usa
   `X-Forwarded-Proto/Host` quando `APP_BASE_URL` está vazio.
+- **Envio em massa** roda em background (job com `POST /api/send-documents`
+  isBulk → 202 + polling), então o timeout de resposta do proxy não interrompe
+  nem duplica o envio. Ainda assim, para estabilidade do WhatsApp Web sob carga,
+  vale fixar `WA_WEB_VERSION` no `.env` e dar folga de memória ao serviço.
 
 ### Volume — persistir **apenas `/app/data`**
 
