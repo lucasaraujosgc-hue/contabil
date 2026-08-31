@@ -6,7 +6,7 @@ import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
-import { getWaClientWrapper, MessageMedia } from '../services/whatsappService.js';
+import { getWaClientWrapper, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
 import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars } from '../services/emailService.js';
 const router = express.Router();
 

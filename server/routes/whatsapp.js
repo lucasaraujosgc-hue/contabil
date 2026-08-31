@@ -7,9 +7,10 @@ import { getDb } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { waClients } from '../state/waState.js';
-import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia } from '../services/whatsappService.js';
+import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
 import { ai, processAI } from '../services/aiService.js';
 import { markViewing, stopViewing } from '../services/presence.js';
+import { waSenderConfig } from '../services/agents.js';
 const router = express.Router();
 
 // Presença: heartbeat de "estou com essa conversa aberta". Devolve quem mais está.
@@ -307,15 +308,20 @@ router.post('/whatsapp/load-history/:chatId', authenticateToken, async (req, res
 
 router.post('/whatsapp/send-chat', upload.single('media'), async (req, res) => {
     try {
-        const { chatId, message } = req.body;
+        const { chatId, message } = req.body || {};
+        if (!chatId) return res.status(400).json({ error: 'chatId ausente na requisição.' });
         const wrapper = getWaClientWrapper(req.user);
-        if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
+        if (!wrapper || !wrapper.client || wrapper.status !== 'connected') {
+            return res.status(400).json({ error: 'WhatsApp não conectado.' });
+        }
 
         // Envio manual por um colaborador logado -> prefixa com "*Nome:*" (negrito nativo do WhatsApp).
         // Só no corpo de texto/legenda; não afeta o arquivo. Não vale p/ cron nem tools de IA.
+        // O nome e o liga/desliga são por colaborador (aba Usuário).
+        const sender = await waSenderConfig(getDb(), req.agent);
         const original = message || '';
-        const content = original.trim()
-            ? `*${(req.agent?.name || 'Atendente').trim()}:* ${original}`
+        const content = (sender.enabled && original.trim())
+            ? `*${sender.name}:* ${original}`
             : original;
         if (req.file) {
             const fileData = fs.readFileSync(req.file.path).toString('base64');
@@ -330,7 +336,10 @@ router.post('/whatsapp/send-chat', upload.single('media'), async (req, res) => {
             if(content) await safeSendMessage(wrapper.client, chatId, content);
         }
         res.json({success: true});
-    } catch(e) { res.status(500).json({error: e.message}); }
+    } catch(e) {
+        log(`[send-chat] falha ao enviar para ${req.body?.chatId}`, e);
+        res.status(500).json({ error: e.message || 'Erro ao enviar mensagem' });
+    }
 });
 
 router.get('/whatsapp/media/:msgId', authenticateToken, async (req, res) => {

@@ -14,6 +14,23 @@ export function waitingLabel(min: number): string {
   return m ? `${h}h${m}` : `${h}h`;
 }
 
+// data/hora curta da última mensagem: "14:32" (hoje), "ontem 14:32", "05/03 14:32", "05/03/24 14:32"
+export function shortStamp(ts?: number | null): string {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const time = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return time;
+  const y = new Date(now); y.setDate(y.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return `ontem ${time}`;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const date = d.toLocaleDateString('pt-BR', sameYear
+    ? { day: '2-digit', month: '2-digit' }
+    : { day: '2-digit', month: '2-digit', year: '2-digit' });
+  return `${date} ${time}`;
+}
+
 export type Urgency = 'none' | 'gray' | 'yellow' | 'red';
 
 export function urgency(min: number, yellowMin = 15, redMin = 30): Urgency {

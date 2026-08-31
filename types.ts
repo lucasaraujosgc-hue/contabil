@@ -171,4 +171,6 @@ export interface UserSettings {
   companyCategories?: CompanyCategory[];
   waKanban?: WaKanbanState;
   clientPortalWebhookUrl?: string; // Webhook para envio dos arquivos ao portal
+  waSenderName?: string;    // por colaborador — nome usado no prefixo "*Nome:*"
+  waPrefixEnabled?: boolean; // por colaborador — mostrar ou não o nome nas mensagens
 }

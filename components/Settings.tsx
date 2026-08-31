@@ -341,6 +341,37 @@ const Settings: React.FC<SettingsProps> = ({ settings, onSave }) => {
           {/* ── Assinaturas ──────────────────────────────────────────────────── */}
           {activeTab === 'signatures' && (
             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              {/* Nome + toggle do prefixo "*Nome:*" no envio manual pelo WhatsApp */}
+              <div className="bg-blue-50/60 border border-blue-100 rounded-xl p-4">
+                <label className="block text-sm font-semibold text-gray-700 flex items-center gap-2 mb-1">
+                  <MessageCircle className="w-4 h-4" /> Meu nome nas mensagens do WhatsApp
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Quando você envia uma mensagem pelo sistema, ela vai prefixada com <code>*Seu nome:*</code> (negrito).
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    type="text"
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-56 outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400"
+                    placeholder="Nome (deixe vazio p/ usar seu nome de cadastro)"
+                    value={formData.waSenderName || ''}
+                    disabled={formData.waPrefixEnabled === false}
+                    onChange={(e) => setFormData({ ...formData, waSenderName: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, waPrefixEnabled: !(formData.waPrefixEnabled !== false) })}
+                    className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                      formData.waPrefixEnabled !== false
+                        ? 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100'
+                        : 'bg-gray-50 border-gray-300 text-gray-500 hover:bg-gray-100'
+                    }`}
+                  >
+                    {formData.waPrefixEnabled !== false ? 'Mostrando o nome ✓' : 'Nome oculto'}
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="space-y-2">
                   <label className="block text-sm font-semibold text-gray-700 flex items-center gap-2">

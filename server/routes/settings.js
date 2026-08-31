@@ -11,8 +11,7 @@ router.get('/settings', async (req, res) => {
     const db = getDb();
     try {
         const row = await db.prepare("SELECT settings FROM user_settings WHERE id = 1").get();
-        const global = row ? JSON.parse(row.settings) : null;
-        if (!global) return res.json(null);
+        const global = row ? JSON.parse(row.settings) : {};
 
         const personal = await getAgentSettings(db, req.agent?.id);
         const admin = isEnvAdmin(req.agent);
@@ -21,6 +20,9 @@ router.get('/settings', async (req, res) => {
             else if (!admin) global[k] = '';   // colaborador sem config pessoal -> em branco
             // admin sem config pessoal -> mantém o valor global
         }
+        // toggle do prefixo "*Nome:*" — por colaborador, padrão ligado
+        global.waPrefixEnabled = personal?.waPrefixEnabled !== false;
+        global.waSenderName = personal?.waSenderName || '';
         res.json(global);
     } catch (err) {
         res.status(500).json({ error: err.message });

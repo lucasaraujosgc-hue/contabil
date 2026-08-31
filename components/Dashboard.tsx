@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { UserSettings, WaKanbanState, WaKanbanColumn, WaKanbanTag, WaKanbanCard, Conversation } from '../types';
 import { api, auth } from '../services/api';
-import { waitingMinutes, waitingLabel, urgency, URGENCY_CLS, applyUpdate } from './dashboard/conversations';
+import { waitingMinutes, waitingLabel, urgency, URGENCY_CLS, applyUpdate, shortStamp } from './dashboard/conversations';
 import ReactMarkdown from 'react-markdown';
 
 // Helper: resolve display label for a chatId
@@ -824,8 +824,9 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
       _optimistic: true
     }));
     if (mediaToSend.length === 0 && textToSend.trim()) {
-      // espelha o prefixo *Nome:* que o backend adiciona no envio manual
-      const prefixedPreview = `*${(me?.name || 'Você')}:* ${textToSend}`;
+      // espelha o prefixo *Nome:* que o backend adiciona (respeitando nome + toggle do colaborador)
+      const senderName = (userSettings.waSenderName || me?.name || 'Você').trim();
+      const prefixedPreview = userSettings.waPrefixEnabled === false ? textToSend : `*${senderName}:* ${textToSend}`;
       optimisticMsgs.push({
         id: { _serialized: `optimistic_${Date.now()}`, id: `optimistic_${Date.now()}` },
         body: prefixedPreview,
@@ -1063,7 +1064,12 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                           {card.profilePicUrl ? <img src={card.profilePicUrl} alt={card.displayName} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <User className="w-full h-full p-1.5 text-gray-400" />}
                                       </div>
                                       <div className="flex-1 min-w-0">
-                                          <h4 className="font-semibold text-gray-800 text-[11px] leading-tight truncate">{card.displayName}</h4>
+                                          <div className="flex items-baseline justify-between gap-1">
+                                              <h4 className="font-semibold text-gray-800 text-[11px] leading-tight truncate">{card.displayName}</h4>
+                                              {shortStamp(card.lastActivityAt) && (
+                                                  <span className="text-[9px] text-gray-400 flex-shrink-0 whitespace-nowrap">{shortStamp(card.lastActivityAt)}</span>
+                                              )}
+                                          </div>
                                           <p className="text-[10px] text-gray-500 truncate leading-tight flex items-center gap-1">
                                               {card.lastMessage && card.lastMessageFromMe && (
                                                 <span title="Enviada por nós" className="flex-shrink-0">

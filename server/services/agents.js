@@ -9,7 +9,9 @@ export const isEnvAdmin = (agent) =>
     !!(agent && agent.username && agent.username.toLowerCase() === tenant().toLowerCase());
 
 // Campos de settings que são POR COLABORADOR (o resto de user_settings é global).
-export const PERSONAL_SETTING_KEYS = ['emailSignature', 'whatsappTemplate', 'whatsappFileSignature'];
+//  - textos: emailSignature, whatsappTemplate, whatsappFileSignature, waSenderName
+//  - flag:   waPrefixEnabled (mostrar "*Nome:*" nas mensagens; padrão true)
+export const PERSONAL_SETTING_KEYS = ['emailSignature', 'whatsappTemplate', 'whatsappFileSignature', 'waSenderName'];
 
 // Abas do sistema com permissão granular (view / edit / create).
 export const PERMISSION_TABS = ['companies', 'documents', 'tasks', 'kanban', 'financeiro', 'settings'];
@@ -115,10 +117,20 @@ export async function getAgentSettings(db, agentId) {
 export async function saveAgentSettings(db, agentId, obj) {
     const clean = {};
     for (const k of PERSONAL_SETTING_KEYS) clean[k] = obj?.[k] ?? '';
+    clean.waPrefixEnabled = obj?.waPrefixEnabled !== false; // padrão: mostra o nome
     await db.prepare(
         `INSERT INTO agent_settings (agent_id, settings) VALUES (?, ?)
          ON CONFLICT (agent_id) DO UPDATE SET settings = EXCLUDED.settings`
     ).run(agentId, JSON.stringify(clean));
+}
+
+// Nome + toggle usados no prefixo "*Nome:*" do envio manual de WhatsApp.
+export async function waSenderConfig(db, agent) {
+    const p = agent?.id ? await getAgentSettings(db, agent.id) : null;
+    return {
+        name: ((p?.waSenderName || agent?.name || 'Atendente') + '').trim(),
+        enabled: p?.waPrefixEnabled !== false,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
