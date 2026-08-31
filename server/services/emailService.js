@@ -102,6 +102,20 @@ export const saveToImapSentFolder = async (mailOptions) => {
     }
 };
 
+// Monta o cabeçalho "From" de um envio.
+//  - alias do colaborador (endereço + nome), quando houver, senão
+//  - EMAIL_FROM_NAME / EMAIL_FROM_EMAIL do .env, senão
+//  - EMAIL_USER.
+// O SMTP continua autenticando sempre com EMAIL_USER/EMAIL_PASS (transporter);
+// o mailbox precisa ter o alias liberado para "enviar como".
+export function resolveFromAddress(agent) {
+    const alias = agent?.email_alias || agent?.emailAlias || '';
+    const aliasName = agent?.email_from_name || agent?.emailFromName || '';
+    const name = (aliasName || process.env.EMAIL_FROM_NAME || 'Contabilidade').trim();
+    const address = (alias || process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER || '').trim();
+    return address ? `"${name}" <${address}>` : name;
+}
+
 // --- Convite de colaborador ---
 export async function sendInviteEmail(agent, rawToken, { reset = false, req = null } = {}) {
     if (!agent?.email) throw new Error('Colaborador sem e-mail cadastrado.');

@@ -84,6 +84,8 @@ export function sanitizeAgent(row) {
         username: row.username || null,
         email: row.email || null,
         department: row.department || null,
+        emailAlias: row.email_alias || null,
+        emailFromName: row.email_from_name || null,
         role: row.role,
         status: row.status,
         isEnvAdmin: isEnvAdmin(row),
@@ -159,14 +161,15 @@ export async function seedAdminIfEmpty(db) {
 // ─────────────────────────────────────────────────────────────────────────────
 // convite / ativação
 // ─────────────────────────────────────────────────────────────────────────────
-export async function createInvite(db, { name, email, department, role = 'colaborador', permissions }) {
+export async function createInvite(db, { name, email, department, role = 'colaborador', permissions, emailAlias, emailFromName }) {
     if (!name || !email) throw new Error('Nome e e-mail são obrigatórios.');
     const { raw, hash, expiresAt } = newInviteToken();
     const permJson = JSON.stringify(parsePermissions(permissions ?? DEFAULT_PERMISSIONS));
     const res = await db.prepare(
-        `INSERT INTO agents (name, email, department, role, permissions, status, invite_token_hash, invite_expires_at)
-         VALUES (?, ?, ?, ?, ?, 'invited', ?, ?)`
-    ).run(name.trim(), email.trim(), (department || '').trim() || null, role === 'admin' ? 'admin' : 'colaborador', permJson, hash, expiresAt);
+        `INSERT INTO agents (name, email, department, role, permissions, status, invite_token_hash, invite_expires_at, email_alias, email_from_name)
+         VALUES (?, ?, ?, ?, ?, 'invited', ?, ?, ?, ?)`
+    ).run(name.trim(), email.trim(), (department || '').trim() || null, role === 'admin' ? 'admin' : 'colaborador', permJson, hash, expiresAt,
+          (emailAlias || '').trim() || null, (emailFromName || '').trim() || null);
     const agent = await getAgentById(db, res.lastInsertRowid);
     return { agent, rawToken: raw };
 }
@@ -214,17 +217,20 @@ export async function activateInvite(db, { rawToken, username, password }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // gestão (admin)
 // ─────────────────────────────────────────────────────────────────────────────
-export async function updateAgent(db, id, { name, email, department, permissions, role }) {
+export async function updateAgent(db, id, { name, email, department, permissions, role, emailAlias, emailFromName }) {
     const agent = await getAgentById(db, id);
     if (!agent) throw new Error('Colaborador não encontrado.');
     await db.prepare(
-        `UPDATE agents SET name = ?, email = ?, department = ?, permissions = ?, role = ? WHERE id = ?`
+        `UPDATE agents SET name = ?, email = ?, department = ?, permissions = ?, role = ?,
+                email_alias = ?, email_from_name = ? WHERE id = ?`
     ).run(
         (name ?? agent.name).trim(),
         (email ?? agent.email ?? '').trim() || null,
         (department ?? agent.department ?? '').trim() || null,
         JSON.stringify(parsePermissions(permissions ?? agent.permissions)),
         role === 'admin' ? 'admin' : (role === 'colaborador' ? 'colaborador' : agent.role),
+        (emailAlias ?? agent.email_alias ?? '').trim() || null,
+        (emailFromName ?? agent.email_from_name ?? '').trim() || null,
         id,
     );
     return sanitizeAgent(await getAgentById(db, id));

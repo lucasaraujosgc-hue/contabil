@@ -2,7 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { createGoogleTask, createGoogleCalendarEvent } from './googleService.js';
-import { emailTransporter, buildEmailHtml, saveToImapSentFolder } from './emailService.js';
+import { emailTransporter, buildEmailHtml, saveToImapSentFolder, resolveFromAddress } from './emailService.js';
 import { getWaClientWrapper, safeSendMessage, upsertContactCache } from './whatsappService.js';
 
 // --- AI CONFIGURATION ---
@@ -290,7 +290,7 @@ export const executeTool = async (name, args, db, username) => {
                 try {
                     const emailList = company.email.split(',').map(e => e.trim());
                     const mailOptions = {
-                        from: process.env.EMAIL_USER,
+                        from: resolveFromAddress(null),
                         to: emailList[0],
                         cc: emailList.slice(1),
                         subject: "Comunicado Contabilidade",

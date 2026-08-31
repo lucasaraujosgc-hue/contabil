@@ -4,7 +4,8 @@ import { UPLOADS_DIR } from '../config.js';
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { getWaClientWrapper, safeSendMessage, MessageMedia } from './whatsappService.js';
-import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars } from './emailService.js';
+import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars, resolveFromAddress } from './emailService.js';
+import { getAgentByUsername } from './agents.js';
 
 // --- CRON JOB --- (extraído do server.js; lógica inalterada, só adaptado p/ Postgres async)
 async function tick() {
@@ -40,6 +41,12 @@ async function tick() {
 
         for (const msg of rows) {
             try {
+                // alias de e-mail de quem criou o agendamento (fallback: remetente do .env)
+                let creatorAgent = null;
+                if (msg.createdBy) {
+                    try { creatorAgent = await getAgentByUsername(db, msg.createdBy); } catch (e) {}
+                }
+
                 if (msg.targetType === 'personal') {
                     if (clientReady) {
                         const FALLBACK_REMINDER_NUMBER = '557591167094';
@@ -119,9 +126,7 @@ async function tick() {
                                 const ccEmails = emailList.slice(1).join(', ');
 
                                 if (mainEmail) {
-                                    const senderName = process.env.EMAIL_FROM_NAME || 'Contabilidade';
-                                    const senderEmail = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER;
-                                    const fromAddress = `"${senderName}" <${senderEmail}>`;
+                                    const fromAddress = resolveFromAddress(creatorAgent);
 
                                     const mailOptions = {
                                         from: fromAddress,

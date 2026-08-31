@@ -191,6 +191,11 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_username ON agents(username);
 
+-- Alias de e-mail por colaborador: o SMTP autentica sempre com EMAIL_USER, mas o
+-- cabeçalho "From" pode sair como um alias configurado nesse mailbox.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS email_alias     TEXT;   -- endereço do "From" (ex: joao@escritorio.com.br)
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS email_from_name TEXT;   -- nome de exibição do "From"
+
 -- Configurações por colaborador (só as assinaturas). O resto de user_settings é global.
 CREATE TABLE IF NOT EXISTS agent_settings (
   agent_id  INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
@@ -220,3 +225,17 @@ CREATE TABLE IF NOT EXISTS wa_conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_wa_conv_assigned ON wa_conversations(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_wa_conv_status   ON wa_conversations(status);
+
+-- Histórico de atendimento de cada conversa: quem mexeu, no quê e quando.
+-- Só eventos de fluxo (setor, responsável, status, transferência, reabertura
+-- automática) — não guarda mensagens. Alimenta o modal "Observações + histórico".
+CREATE TABLE IF NOT EXISTS wa_conversation_events (
+  id          SERIAL PRIMARY KEY,
+  chat_id     TEXT NOT NULL,
+  kind        TEXT NOT NULL,          -- assigned | unassigned | department | status | transfer | reopen_auto
+  detail      TEXT,                   -- rótulo já resolvido (nome do setor, do responsável, status…)
+  agent_id    INTEGER,                -- quem fez a ação (null = sistema)
+  agent_name  TEXT,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_conv_events_chat ON wa_conversation_events(chat_id, created_at);

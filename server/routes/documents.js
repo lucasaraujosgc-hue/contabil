@@ -7,7 +7,7 @@ import { getDb } from '../db/index.js';
 import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { getWaClientWrapper, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
-import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars } from '../services/emailService.js';
+import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars, resolveFromAddress } from '../services/emailService.js';
 const router = express.Router();
 
 router.post('/upload', requirePermission('documents','create'), upload.single('file'), (req, res) => {
@@ -159,9 +159,7 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
                     const ccEmails = emailList.slice(1).join(', ');
 
                     if (mainEmail) {
-                        const senderName = process.env.EMAIL_FROM_NAME || 'Contabilidade';
-                        const senderEmail = process.env.EMAIL_FROM_EMAIL || process.env.EMAIL_USER;
-                        const fromAddress = `"${senderName}" <${senderEmail}>`;
+                        const fromAddress = resolveFromAddress(req.agentRaw);
 
                         const mailOptions = {
                             from: fromAddress,
