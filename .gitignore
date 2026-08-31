@@ -12,3 +12,4 @@ migrated_prompt_history/
 
 .codemod/
 .smoketest/
+.run/
