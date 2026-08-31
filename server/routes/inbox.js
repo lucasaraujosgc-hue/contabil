@@ -6,6 +6,7 @@ import { broadcastWaEvent } from '../state/waState.js';
 import {
     listConversations, getConversation, patchConversation,
     claimConversation, transferConversation, deleteConversation,
+    getConversationEvents,
 } from '../services/conversations.js';
 
 const router = express.Router();
@@ -24,6 +25,17 @@ router.get('/inbox', requirePermission('kanban', 'view'), async (req, res) => {
             includeResolved: req.query.resolved === '1' || req.query.resolved === 'true',
         });
         res.json(list);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /api/inbox/:chatId/events  — observações + histórico de atendimento
+router.get('/inbox/:chatId/events', requirePermission('kanban', 'view'), async (req, res) => {
+    try {
+        const conv = await getConversation(getDb(), req.params.chatId);
+        const events = await getConversationEvents(getDb(), req.params.chatId);
+        res.json({ note: conv?.note || '', events });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

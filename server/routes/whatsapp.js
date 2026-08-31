@@ -406,7 +406,17 @@ router.get('/whatsapp/chat-info/:chatId', authenticateToken, async (req, res) =>
         const chatId = req.params.chatId;
         const profilePicUrl = await wrapper.client.getProfilePicUrl(chatId).catch(() => null);
         const contact = await wrapper.client.getContactById(chatId).catch(() => null);
-        
+
+        // número real: contatos novos vêm como "<id>@lid" (privacidade). Resolve o
+        // telefone de verdade a partir do LID quando o contato não expõe .number.
+        let number = contact ? contact.number : null;
+        if (!number || chatId.endsWith('@lid')) {
+            try {
+                const [pair] = await wrapper.client.getContactLidAndPhone([chatId]);
+                if (pair?.pn) number = pair.pn.replace(/@c\.us$/, '').replace(/\D/g, '') || number;
+            } catch (e) { /* mantém o que tiver */ }
+        }
+
         let lastMessage = '';
         let lastMessageFromMe = false;
         let lastMessageTimestamp = null;
@@ -433,7 +443,7 @@ router.get('/whatsapp/chat-info/:chatId', authenticateToken, async (req, res) =>
         res.json({
             profilePicUrl,
             pushname: contact ? (contact.pushname || contact.name) : null,
-            number: contact ? contact.number : null,
+            number,
             lastMessage,
             lastMessageFromMe,
             lastMessageTimestamp

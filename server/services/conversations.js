@@ -7,6 +7,42 @@ import { listViewers } from './presence.js';
 const STATUSES = ['open', 'pending', 'resolved'];
 const now = () => Math.floor(Date.now() / 1000);
 
+// ── histórico de atendimento ────────────────────────────────────────────────
+// nome do setor a partir do id (os setores vivem no blob user_settings.waKanban)
+async function departmentName(db, deptId) {
+    if (!deptId) return null;
+    try {
+        const row = await db.prepare('SELECT settings FROM user_settings WHERE id = 1').get();
+        const list = row ? (JSON.parse(row.settings).waKanban?.departments || []) : [];
+        return list.find((d) => d.id === deptId)?.name || deptId;
+    } catch { return deptId; }
+}
+
+export async function logConversationEvent(db, chatId, agent, kind, detail = null) {
+    if (!chatId || !kind) return;
+    try {
+        await db.prepare(
+            `INSERT INTO wa_conversation_events (chat_id, kind, detail, agent_id, agent_name)
+             VALUES (?, ?, ?, ?, ?)`
+        ).run(chatId, kind, detail || null, agent?.id || null, agent?.name || null);
+    } catch (e) { log(`[conv] event ${kind} ${chatId}: ${e.message}`); }
+}
+
+export async function getConversationEvents(db, chatId) {
+    const rows = await db.prepare(
+        `SELECT id, kind, detail, agent_id, agent_name, created_at
+           FROM wa_conversation_events WHERE chat_id = ? ORDER BY created_at ASC, id ASC`
+    ).all(chatId);
+    return rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        detail: r.detail || null,
+        agentId: r.agent_id || null,
+        agentName: r.agent_name || null,
+        createdAt: r.created_at,
+    }));
+}
+
 function toDto(row, extra = {}) {
     if (!row) return null;
     let tagIds = [];
@@ -49,14 +85,26 @@ export async function touchConversation(db, chatId, { fromMe, ts, name } = {}) {
     if (!chatId) return null;
     const t = Number(ts) || now();
     await ensureConversation(db, chatId, name);
+
+    // msg do cliente numa conversa RESOLVIDA -> reabre e volta pra fila:
+    // status = open, sem responsável e sem setor (mantém tags e coluna).
+    let autoReopened = false;
+    if (!fromMe) {
+        const cur = await db.prepare('SELECT status FROM wa_conversations WHERE chat_id = ?').get(chatId);
+        autoReopened = cur?.status === 'resolved';
+    }
     const col = fromMe ? 'last_outbound_at' : 'last_inbound_at';
-    // msg do cliente numa conversa resolvida -> reabre
-    const reopen = fromMe ? '' : `, status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END`;
+    const reopen = autoReopened
+        ? `, status = 'open', assigned_agent_id = NULL, claimed_at = NULL, department = NULL,
+             resolved_at = NULL, resolved_by = NULL`
+        : '';
     await db.prepare(
         `UPDATE wa_conversations
             SET ${col} = ?, last_activity_at = ?, name = COALESCE(?, name), updated_at = now()${reopen}
           WHERE chat_id = ?`
     ).run(t, t, name || null, chatId);
+
+    if (autoReopened) await logConversationEvent(db, chatId, null, 'reopen_auto', 'cliente enviou nova mensagem');
     return getConversation(db, chatId);
 }
 
@@ -108,6 +156,10 @@ export async function listConversations(db, { filter = 'all', agentId, departmen
 // ── mutações ────────────────────────────────────────────────────────────────
 export async function patchConversation(db, chatId, agent, patch = {}) {
     await ensureConversation(db, chatId, patch.name);
+    const before = await db.prepare(
+        'SELECT department, assigned_agent_id, status FROM wa_conversations WHERE chat_id = ?'
+    ).get(chatId) || {};
+
     const sets = [];
     const params = [];
     const add = (col, val) => { sets.push(`${col} = ?`); params.push(val); };
@@ -134,6 +186,26 @@ export async function patchConversation(db, chatId, agent, patch = {}) {
 
     sets.push('updated_at = now()');
     await db.prepare(`UPDATE wa_conversations SET ${sets.join(', ')} WHERE chat_id = ?`).run(...params, chatId);
+
+    // histórico de atendimento — só setor / responsável / status
+    try {
+        if ('department' in patch && (patch.department || null) !== (before.department || null)) {
+            await logConversationEvent(db, chatId, agent, 'department',
+                patch.department ? await departmentName(db, patch.department) : 'sem setor');
+        }
+        if ('assignedAgentId' in patch && (patch.assignedAgentId || null) !== (before.assigned_agent_id || null)) {
+            if (patch.assignedAgentId) {
+                const a = await db.prepare('SELECT name FROM agents WHERE id = ?').get(patch.assignedAgentId);
+                await logConversationEvent(db, chatId, agent, 'assigned', a?.name || `#${patch.assignedAgentId}`);
+            } else {
+                await logConversationEvent(db, chatId, agent, 'unassigned', 'voltou pra fila');
+            }
+        }
+        if ('status' in patch && STATUSES.includes(patch.status) && patch.status !== (before.status || 'open')) {
+            await logConversationEvent(db, chatId, agent, 'status', patch.status);
+        }
+    } catch (e) { log(`[conv] log patch ${chatId}: ${e.message}`); }
+
     return getConversation(db, chatId);
 }
 
