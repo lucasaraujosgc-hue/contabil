@@ -72,6 +72,11 @@ api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado ant
   e o layout do Kanban. Cada colaborador só edita o que é **seu**, guardado em
   `agent_settings`: as assinaturas (e-mail + WhatsApp), o **nome que aparece nas
   mensagens** do WhatsApp e o botão que **liga/desliga** esse nome.
+- **Alias de e-mail por colaborador**: no cadastro do colaborador o admin define
+  um endereço de alias + nome de exibição. Quando esse colaborador envia
+  documentos/mensagens (inclusive nos agendamentos que ele criou), o e-mail sai
+  desse remetente. O login SMTP continua sendo a conta principal do `.env`
+  (`EMAIL_USER`) — o alias só precisa estar liberado nesse mailbox.
 
 ## Kanban de atendimento (WhatsApp) — multi-atendente
 
@@ -83,8 +88,14 @@ api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado ant
   (avisa se outro atendente já assumiu).
 - **Aguardando resposta**: quando a última mensagem é do cliente, o card mostra
   há quanto tempo, colorido pelos limiares (padrão amarelo 15min / vermelho 30min).
-- **Resolver** arquiva da fila; a conversa **reabre sozinha** se o cliente escrever.
+- **Resolver** arquiva da fila; se o cliente escrever de novo a conversa **reabre
+  sozinha e volta pra "Não atribuídas" sem setor** (tags e coluna são mantidas).
   **Transferir** move pra outro setor/colaborador com uma nota interna.
+- **Ficha do atendimento** (botão ao lado de "Resolver"): observações internas
+  editáveis + histórico de atendimento (datas, marcações de setor e a quem a
+  conversa foi atribuída).
+- No cabeçalho da conversa aparece o **telefone real** mesmo quando o WhatsApp
+  entrega o contato como identificador de privacidade (`@lid`).
 - Filtros: Todas · Minhas · Não atribuídas · Aguardando · por setor · Resolvidas.
 - **Ao vivo**: qualquer mudança (assumir, mover, resolver, transferir) propaga por
   SSE — o board de todos os atendentes atualiza na hora.

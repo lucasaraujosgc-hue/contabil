@@ -97,6 +97,17 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
 - O **cron** lê `user_settings.emailSignature` como assinatura padrão dos envios
   agendados.
 
+### Alias de e-mail por colaborador (`agents.email_alias` / `email_from_name`)
+
+- Editado pelo **admin** no cadastro do colaborador (`Users.tsx` → modal), não no
+  self-service. Colunas na tabela `agents` (não em `agent_settings`).
+- `resolveFromAddress(agent)` em `emailService.js` monta o `From`:
+  alias do colaborador → `EMAIL_FROM_NAME`/`EMAIL_FROM_EMAIL` → `EMAIL_USER`.
+- Usado em `send-documents` (`req.agentRaw`) e no **cron** (agente de
+  `scheduled_messages.createdBy`). O transporter SMTP **continua** autenticando
+  com `EMAIL_USER`/`EMAIL_PASS` — o mailbox precisa ter o alias liberado p/
+  "enviar como". `sendInviteEmail` fica no remetente do sistema.
+
 ## Kanban / atendimento (WhatsApp) — `components/Dashboard.tsx` (arquivo grande, ~2000 linhas)
 
 - **Layout do board** (`userSettings.waKanban` = colunas, tags, setores,
@@ -106,14 +117,24 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
 - **Conversas** vivem na tabela **`wa_conversations`** (`server/services/conversations.js`).
   DTO camelCase; tabela snake. Uma coluna fixa **"Não atribuídas"** no board.
 - Rotas `server/routes/inbox.js`: `GET /api/inbox?filter=mine|unassigned|waiting|open|resolved`,
+  `GET /api/inbox/:chatId/events` (observações + histórico),
   `PATCH /api/inbox/:chatId` (campos individuais, **não** clobber),
   `POST .../claim` (409 `{conflict,current}` se tomada; `{force}`),
   `.../resolve` · `.../reopen` · `.../transfer`. Toda mutação broadcasta SSE
   **`conversation_update`** → o board de todos os atendentes atualiza ao vivo.
 - **"Aguardando resposta"** = `last_inbound_at > last_outbound_at`; cor pelos
   limiares. `touchConversation` (nos handlers `message`/`message_create` de
-  `whatsappService`) atualiza os timestamps e **reabre** conversa `resolved` se o
-  cliente escreve.
+  `whatsappService`) atualiza os timestamps. Msg do cliente numa conversa
+  `resolved` → **reabre e volta pra fila**: `status='open'`, sem
+  `assigned_agent_id` e sem `department` (mantém tags e coluna).
+- **Histórico de atendimento** (`wa_conversation_events`): `patchConversation`
+  registra mudança de setor / responsável / status (rótulo já resolvido: nome do
+  setor, nome do agente); auto-reabertura registra `reopen_auto`. **Não** guarda
+  mensagens. O modal "Ficha" (botão ao lado de Resolver no cabeçalho da conversa)
+  mostra as observações (edita `note` via PATCH) + a timeline desses eventos.
+- **Número real**: contatos novos chegam como `<id>@lid`. `GET /whatsapp/chat-info`
+  resolve o telefone via `client.getContactLidAndPhone([chatId])`; o frontend
+  formata (`formatPhoneBR`).
 - Migração `migrateConversations(db)` no boot: backfill do `waKanban.cards` antigo.
 - Frontend: fonte da verdade = `GET /api/inbox` mesclado com `waChats` (unread)
   + SSE. Helpers puros em `components/dashboard/conversations.ts`.
