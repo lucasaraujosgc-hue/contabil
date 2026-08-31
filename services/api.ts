@@ -81,6 +81,12 @@ export const api = {
     return handleResponse(res);
   },
 
+  // salva o board do Kanban (colaborador só persiste os cards; admin persiste tudo)
+  saveKanban: async (waKanban: any): Promise<{ success: boolean; waKanban: any }> => {
+    const res = await fetch(`${API_URL}/kanban`, { method: 'PUT', headers: getHeaders(), body: JSON.stringify(waKanban) });
+    return handleResponse(res);
+  },
+
   // presença: heartbeat "estou com essa conversa aberta" -> devolve quem mais está
   setChatViewing: async (chatId: string): Promise<{ viewers: { agentId: number; name: string; department: string | null; since: number }[] }> => {
     const res = await fetch(`${API_URL}/whatsapp/viewing/${encodeURIComponent(chatId)}`, { method: 'POST', headers: getAuthHeader() });

@@ -11,6 +11,7 @@ export interface Agent {
   department: string | null;
   role: 'admin' | 'colaborador';
   status: string;
+  isEnvAdmin?: boolean;
   permissions: AgentPermissions;
 }
 

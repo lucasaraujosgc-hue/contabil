@@ -428,10 +428,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   };
 
   const updateKanbanState = async (newState: WaKanbanState) => {
-      const newSettings = { ...userSettings, waKanban: newState };
+      onSaveSettings({ ...userSettings, waKanban: newState }); // otimista
       try {
-          await api.saveSettings(newSettings);
-          onSaveSettings(newSettings);
+          const r = await api.saveKanban(newState);
+          if (r?.waKanban) onSaveSettings({ ...userSettings, waKanban: r.waKanban }); // reconcilia (colaborador só grava cards)
       } catch (e) {}
   };
 
@@ -932,13 +932,15 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                    <Phone className="w-4 h-4" />
                </button>
            </div>
-           <button 
-             onClick={() => setIsConfigModalOpen(true)}
-             className="p-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors"
-             title="Configurar Colunas e Tags"
-           >
-              <Settings className="w-5 h-5" />
-           </button>
+           {me?.isEnvAdmin && (
+             <button
+               onClick={() => setIsConfigModalOpen(true)}
+               className="p-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors"
+               title="Configurar Colunas, Tags e Setores"
+             >
+                <Settings className="w-5 h-5" />
+             </button>
+           )}
            <button 
              onClick={handleSyncAllKanbanContacts}
              className="p-1.5 border border-amber-200 text-amber-600 rounded-lg hover:bg-amber-50 transition-colors"
