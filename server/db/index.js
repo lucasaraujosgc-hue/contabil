@@ -106,13 +106,17 @@ export const getDb = () => db;
 
 // ─────────────────────────────────────────────────────────────────────────────
 export async function initDb() {
-    const schema = fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
+    const raw = fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
     try {
-        await getPool().query(schema);
+        await getPool().query(raw);
     } catch (e) {
-        // fallback p/ drivers/mocks que não aceitam múltiplos statements numa query só
-        for (const stmt of schema.split(';').map((s) => s.trim()).filter(Boolean)) {
-            await getPool().query(stmt);
+        // fallback p/ drivers/mocks que não aceitam múltiplos statements numa query só.
+        // Tira comentários "--" e roda statement por statement; ignora falha individual
+        // (o schema é todo CREATE ... IF NOT EXISTS — no Postgres real nunca dá erro).
+        const clean = raw.replace(/^\s*--.*$/gm, '');
+        for (const stmt of clean.split(';').map((s) => s.trim()).filter(Boolean)) {
+            try { await getPool().query(stmt); }
+            catch (err) { log(`[DB] statement de schema ignorado no fallback: ${err.message.split('\n')[0]}`); }
         }
     }
     log('[DB] schema verificado/criado (Postgres)');
