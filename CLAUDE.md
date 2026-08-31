@@ -167,6 +167,15 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
   no `waKanban` (blob) — perde alteração entre atendentes.
 - `PUT /api/kanban` só configura o layout (colunas/tags/setores/limiares) e é do
   **admin do .env**.
+- **Envio (`safeSendMessage` / `send-documents` / cron)** — anti-duplicação, não
+  reintroduzir:
+  - `safeSendMessage` faz **uma** tentativa e propaga o erro. **Nunca** reenviar
+    no `catch` (frame desanexado depois do envio → retry dobra a mensagem).
+  - `send-documents` pega `acquireSendLock(req.user)` (409 se ocupado), checa
+    `res` abortado no loop, e usa `wasRecentlySent`/`markSent` (`sendLock.js`,
+    TTL 10 min) por `chatId`+hash do texto/mídia.
+  - `cron` **reagenda/desativa o `scheduled_messages` ANTES de enviar** — senão um
+    erro no meio do lote reenvia tudo no tick seguinte (60s).
 
 ## Comandos
 
@@ -175,8 +184,8 @@ npm install            # sem build nativo (pg é JS puro)
 npm start              # prod: initDb + serve dist/ + API
 npm run dev            # Vite :5173, proxy /api -> :3000  (rode `npm start` junto p/ ter API)
 npm run build          # vite build -> dist/
-npx tsc --noEmit       # checagem de tipos do front (6 erros PRÉ-EXISTENTES:
-                       #   Dashboard.tsx x3, BulkSend/Send `isBulk`, PendenciesTab `title`)
+npx tsc --noEmit       # checagem de tipos do front (4 erros PRÉ-EXISTENTES:
+                       #   Dashboard.tsx x3, PendenciesTab `title`)
 ```
 
 Sem suíte de testes. Verificação durante o desenvolvimento: `pg-mem` (Postgres em
