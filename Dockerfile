@@ -44,6 +44,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY server.js ./
 COPY server/ ./server/
 COPY api/ ./api/
+COPY scripts/ ./scripts/
 COPY --from=builder /app/dist ./dist
 
 RUN mkdir -p /app/data/whatsapp_auth /app/data/uploads && \

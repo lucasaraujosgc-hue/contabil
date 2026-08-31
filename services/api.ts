@@ -113,6 +113,16 @@ export const api = {
     const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}/transfer`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
     return handleResponse(res);
   },
+  deleteConversation: async (chatId: string): Promise<{ deleted: boolean; messages: number }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}`, { method: 'DELETE', headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
+  // --- Admin (só o admin do .env) ---
+  importLegacy: async (payload: { file?: string; dry?: boolean } = {}): Promise<{ success: boolean; dry: boolean; file: string; stats: Record<string, number> }> => {
+    const res = await fetch(`${API_URL}/admin/import-legacy`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
+    return handleResponse(res);
+  },
 
   // presença: heartbeat "estou com essa conversa aberta" -> devolve quem mais está
   setChatViewing: async (chatId: string): Promise<{ viewers: { agentId: number; name: string; department: string | null; since: number }[] }> => {

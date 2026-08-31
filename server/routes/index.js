@@ -11,6 +11,7 @@ import whatsappRouter from './whatsapp.js';
 import agentsRouter from './agents.js';
 import kanbanRouter from './kanban.js';
 import inboxRouter from './inbox.js';
+import adminRouter from './admin.js';
 
 // Registra as rotas na MESMA ordem do server.js original:
 //   /api/ai/chat  ->  /api/login  ->  /api/pendencies (auth)  ->  gate global  ->  demais
@@ -29,4 +30,5 @@ export function setupRoutes(app) {
     app.use('/api', whatsappRouter);
     app.use('/api', kanbanRouter);        // PUT /kanban — colunas/tags/setores (admin)
     app.use('/api', inboxRouter);         // /inbox — conversas / atendimento
+    app.use('/api', adminRouter);         // /admin/* — só o admin do .env
 }

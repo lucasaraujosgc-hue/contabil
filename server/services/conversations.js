@@ -148,6 +148,18 @@ export async function claimConversation(db, chatId, agent, { force = false } = {
     return { conflict: false, conversation: conv };
 }
 
+// apaga a conversa do quadro E o histórico de mensagens/contato/sync (limpar lixo).
+// Reaparece do zero se o cliente mandar mensagem de novo.
+export async function deleteConversation(db, chatId) {
+    if (!chatId) return { deleted: false };
+    const msgs = await db.prepare('SELECT COUNT(*) AS n FROM whatsapp_messages WHERE chatId = ?').get(chatId);
+    await db.prepare('DELETE FROM whatsapp_messages WHERE chatId = ?').run(chatId);
+    await db.prepare('DELETE FROM whatsapp_sync WHERE chatId = ?').run(chatId);
+    await db.prepare('DELETE FROM whatsapp_contacts WHERE contact_id = ?').run(chatId);
+    await db.prepare('DELETE FROM wa_conversations WHERE chat_id = ?').run(chatId);
+    return { deleted: true, messages: Number(msgs?.n || 0) };
+}
+
 export async function transferConversation(db, chatId, agent, { toAgentId, toDepartment, note } = {}) {
     const patch = {};
     if (toAgentId !== undefined) patch.assignedAgentId = toAgentId || null;

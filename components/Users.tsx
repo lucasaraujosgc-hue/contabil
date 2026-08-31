@@ -169,6 +169,57 @@ const Users: React.FC = () => {
           onConfirm={() => doAction(confirming.agent, confirming.action)}
         />
       )}
+
+      <LegacyImport />
+    </div>
+  );
+};
+
+// ─── Importar dados do sistema antigo (SQLite) ──────────────────────────────
+const LegacyImport: React.FC = () => {
+  const [file, setFile] = useState('legado.db');
+  const [busy, setBusy] = useState<'' | 'dry' | 'apply'>('');
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState('');
+
+  const run = async (dry: boolean) => {
+    setBusy(dry ? 'dry' : 'apply'); setErr(''); setResult(null);
+    try {
+      const r = await api.importLegacy({ file: file.trim(), dry });
+      setResult(r);
+    } catch (e: any) { setErr(e.message); }
+    finally { setBusy(''); }
+  };
+
+  return (
+    <div className="mt-10 border-t border-gray-200 pt-6">
+      <h3 className="font-semibold text-gray-800">Importar do sistema antigo</h3>
+      <p className="text-sm text-gray-500 mt-1 mb-3">
+        Traz empresas (com o hash do Portal do Cliente), categorias, regras de vencimento e pendências
+        de um <code>.db</code> antigo. Ignora as conversas do WhatsApp. Coloque o arquivo na pasta
+        <code> data/ </code> do volume e informe o nome abaixo.
+      </p>
+      <div className="flex items-center gap-2">
+        <input value={file} onChange={e => setFile(e.target.value)} placeholder="legado.db"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-48 outline-none focus:ring-2 focus:ring-blue-500" />
+        <button onClick={() => run(true)} disabled={!!busy}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60">
+          {busy === 'dry' ? 'Analisando…' : 'Prévia'}
+        </button>
+        <button onClick={() => run(false)} disabled={!!busy}
+          className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-60">
+          {busy === 'apply' ? 'Importando…' : 'Importar'}
+        </button>
+      </div>
+      {err && <div className="mt-3 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">{err}</div>}
+      {result && (
+        <div className="mt-3 bg-green-50 border border-green-200 text-green-800 rounded-lg px-3 py-2 text-sm">
+          <p className="font-semibold">{result.dry ? 'Prévia (nada gravado)' : 'Importação concluída'} — {result.file}</p>
+          <ul className="mt-1 space-y-0.5">
+            {Object.entries(result.stats || {}).sort().map(([k, v]) => <li key={k}>{k}: <strong>{String(v)}</strong></li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 };

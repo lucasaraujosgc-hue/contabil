@@ -5,7 +5,7 @@ import { requirePermission } from '../middleware/auth.js';
 import { broadcastWaEvent } from '../state/waState.js';
 import {
     listConversations, getConversation, patchConversation,
-    claimConversation, transferConversation,
+    claimConversation, transferConversation, deleteConversation,
 } from '../services/conversations.js';
 
 const router = express.Router();
@@ -70,6 +70,17 @@ router.post('/inbox/:chatId/transfer', requirePermission('kanban', 'edit'), asyn
         const conv = await transferConversation(getDb(), req.params.chatId, req.agent, req.body || {});
         emit(conv, req.agent);
         res.json({ success: true, conversation: conv });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+});
+
+// DELETE /api/inbox/:chatId  — apaga a conversa + histórico de mensagens (limpar lixo)
+router.delete('/inbox/:chatId', requirePermission('kanban', 'edit'), async (req, res) => {
+    try {
+        const r = await deleteConversation(getDb(), req.params.chatId);
+        broadcastWaEvent(tenant(), 'conversation_deleted', { chatId: req.params.chatId, updatedBy: req.agent?.id || null });
+        res.json({ success: true, ...r });
     } catch (e) {
         res.status(400).json({ error: e.message });
     }

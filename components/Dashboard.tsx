@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Building2, CheckCircle2, Clock, AlertCircle, Loader2, Bot, Power, User, Trash2,
+  Building2, CheckCircle2, CheckCheck, Clock, AlertCircle, Loader2, Bot, Power, User, Trash2,
   Plus, MoreHorizontal, MessageCircle, Settings, X, Search, Phone, Send, Mic,
   Paperclip, Music, FileText, Image as ImageIcon, RefreshCw, History, Download, Calendar,
   Eye, Users as UsersIcon
@@ -70,6 +70,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const [nowTick, setNowTick] = useState(Math.floor(Date.now() / 1000));
   const [transferChatId, setTransferChatId] = useState<string | null>(null);
   const [claimConflict, setClaimConflict] = useState<{ chatId: string; name: string } | null>(null);
+  const [deleteChatId, setDeleteChatId] = useState<string | null>(null);
   const [chatDetailsMap, setChatDetailsMap] = useState<Record<string, { profilePicUrl?: string | null, lastMessage?: string, lastMessageFromMe?: boolean, name?: string, number?: string | null }>>({});
   const [expandedMediaUrl, setExpandedMediaUrl] = useState<string | null>(null);
   const [expandedMediaType, setExpandedMediaType] = useState<'image' | 'video' | 'document' | null>(null);
@@ -132,6 +133,14 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   };
   const doStatus = async (chatId: string, action: 'resolve' | 'reopen') => {
     try { mergeConversation((await api.setConversationStatus(chatId, action)).conversation); } catch (e) {}
+  };
+  const doDelete = async (chatId: string) => {
+    try {
+      await api.deleteConversation(chatId);
+      setConversations(prev => { const n = { ...prev }; delete n[chatId]; return n; });
+      if (activeChat && (activeChat.id._serialized || activeChat.id) === chatId) setActiveChat(null);
+    } catch (e) {}
+    setDeleteChatId(null);
   };
 
   useEffect(() => {
@@ -274,6 +283,14 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           if (p && p.chatId) setConversations(prev => applyUpdate(prev, p));
           return;
         }
+        if (data.type === 'conversation_deleted') {
+          const cid = data.payload?.chatId;
+          if (cid) {
+            setConversations(prev => { const n = { ...prev }; delete n[cid]; return n; });
+            setActiveChat((cur: any) => (cur && (cur.id._serialized || cur.id) === cid ? null : cur));
+          }
+          return;
+        }
 
         if (data.type === 'whatsapp_message') {
           const msg = data.payload;
@@ -387,6 +404,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           const tag = kanbanState.tags.find(t => t.id === tid);
           return tag && (tag.name || '').toLowerCase().includes(term);
       });
+  }).sort((a, b) => {
+      // mensagens novas (não lidas) primeiro, depois atividade mais recente no topo
+      if ((b.unreadCount > 0 ? 1 : 0) !== (a.unreadCount > 0 ? 1 : 0)) return (b.unreadCount > 0 ? 1 : 0) - (a.unreadCount > 0 ? 1 : 0);
+      return (b.lastActivityAt || 0) - (a.lastActivityAt || 0);
   });
 
   const waitingCount = cardList.filter(c => c.status !== 'resolved' && c.waiting).length;
@@ -1044,7 +1065,11 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                       <div className="flex-1 min-w-0">
                                           <h4 className="font-semibold text-gray-800 text-[11px] leading-tight truncate">{card.displayName}</h4>
                                           <p className="text-[10px] text-gray-500 truncate leading-tight flex items-center gap-1">
-                                              {card.lastMessageFromMe && <CheckCircle2 className="w-2.5 h-2.5 text-blue-500 flex-shrink-0" />}
+                                              {card.lastMessage && card.lastMessageFromMe && (
+                                                <span title="Enviada por nós" className="flex-shrink-0">
+                                                  <CheckCheck className="w-3 h-3 text-sky-500" />
+                                                </span>
+                                              )}
                                               {card.lastMessage || 'Sem mensagem'}
                                           </p>
                                       </div>
@@ -1135,6 +1160,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                                           ))}
                                                           {kanbanState.tags.length === 0 && <div className="text-xs text-gray-400 p-1">Nenhuma tag</div>}
                                                       </div>
+                                                      <button onClick={() => { setDeleteChatId(card.chatId); setTagMenuCardId(null); }}
+                                                          className="w-full mt-2 text-xs py-1.5 rounded bg-red-50 text-red-600 font-semibold hover:bg-red-100 flex items-center justify-center gap-1">
+                                                          <Trash2 className="w-3.5 h-3.5" /> Apagar conversa
+                                                      </button>
                                                   </div>
                                               )}
                                           </div>
@@ -1173,6 +1202,26 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                   <div className="flex justify-end gap-2 mt-5">
                       <button onClick={() => setClaimConflict(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
                       <button onClick={() => { doClaim(claimConflict.chatId, true); setClaimConflict(null); }} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700">Assumir</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {deleteChatId && (
+          <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+                  <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0"><Trash2 className="w-5 h-5 text-red-600" /></div>
+                      <div>
+                          <h3 className="font-bold text-gray-800">Apagar conversa</h3>
+                          <p className="text-sm text-gray-600 mt-1">
+                              Remove a conversa <strong>{conv(deleteChatId)?.name || deleteChatId}</strong> do quadro e apaga <strong>todo o histórico de mensagens</strong> guardado. Não tem como desfazer (mas volta do zero se o cliente escrever de novo).
+                          </p>
+                      </div>
+                  </div>
+                  <div className="flex justify-end gap-2 mt-5">
+                      <button onClick={() => setDeleteChatId(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
+                      <button onClick={() => doDelete(deleteChatId)} className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700">Apagar</button>
                   </div>
               </div>
           </div>
@@ -1372,6 +1421,9 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                           {kanbanState.tags.length === 0 && <div className="text-xs text-gray-400 p-1">Nenhuma tag</div>}
                                        </div>
                                    </div>
+                                   <button onClick={() => setDeleteChatId(acid)} title="Apagar conversa" className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-md border">
+                                       <Trash2 className="w-4 h-4" />
+                                   </button>
                                  </>
                                );
                            })()}
