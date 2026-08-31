@@ -399,11 +399,18 @@ export const getWaClientWrapper = (username) => {
             }); 
         });
         
-        client.on('ready', async () => { 
+        client.on('ready', async () => {
             log(`[WhatsApp Event] CLIENTE PRONTO (${username})`);
             waClients[username].status = 'connected';
             waClients[username].qr = null;
             waClients[username].info = client.info;
+
+            // Versão do WhatsApp Web em uso — copie este número pro WA_WEB_VERSION do
+            // .env se um dia precisar travar a versão (erros "Evaluation failed").
+            try {
+                const wwv = await client.getWWebVersion();
+                log(`[WhatsApp] WhatsApp Web versão em uso: ${wwv}`);
+            } catch (e) { /* não crítico */ }
 
             // ============================================================
             // FIX 1 — Popular cache de contatos proativamente ao conectar
