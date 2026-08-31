@@ -9,7 +9,17 @@ import { upload } from '../middleware/upload.js';
 import { waClients } from '../state/waState.js';
 import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia } from '../services/whatsappService.js';
 import { ai, processAI } from '../services/aiService.js';
+import { markViewing, stopViewing } from '../services/presence.js';
 const router = express.Router();
+
+// Presença: heartbeat de "estou com essa conversa aberta". Devolve quem mais está.
+router.post('/whatsapp/viewing/:chatId', (req, res) => {
+    res.json({ viewers: markViewing(req.params.chatId, req.agent) });
+});
+router.delete('/whatsapp/viewing/:chatId', (req, res) => {
+    if (req.agent) stopViewing(req.params.chatId, req.agent.id);
+    res.json({ success: true });
+});
 
 router.get('/whatsapp/status', (req, res) => { 
     const wrapper = getWaClientWrapper(req.user);
@@ -300,8 +310,13 @@ router.post('/whatsapp/send-chat', upload.single('media'), async (req, res) => {
         const { chatId, message } = req.body;
         const wrapper = getWaClientWrapper(req.user);
         if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
-        
-        let content = message || '';
+
+        // Envio manual por um colaborador logado -> prefixa com "*Nome:*" (negrito nativo do WhatsApp).
+        // Só no corpo de texto/legenda; não afeta o arquivo. Não vale p/ cron nem tools de IA.
+        const original = message || '';
+        const content = original.trim()
+            ? `*${(req.agent?.name || 'Atendente').trim()}:* ${original}`
+            : original;
         if (req.file) {
             const fileData = fs.readFileSync(req.file.path).toString('base64');
             const media = new MessageMedia(req.file.mimetype, fileData, req.file.originalname);

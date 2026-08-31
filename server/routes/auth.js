@@ -5,7 +5,7 @@ import { getWaClientWrapper } from '../services/whatsappService.js';
 import { authenticateToken, signToken } from '../middleware/auth.js';
 import {
     getAgentByUsername, verifyPassword, sanitizeAgent,
-    findByInviteToken, activateInvite,
+    findByInviteToken, activateInvite, listAgents,
 } from '../services/agents.js';
 
 const router = express.Router();
@@ -57,6 +57,18 @@ router.post('/auth/activate', async (req, res) => {
 // GET /api/auth/me  (autenticado)
 router.get('/auth/me', authenticateToken, (req, res) => {
     res.json(req.agent);
+});
+
+// GET /api/auth/agents  — lista enxuta p/ o seletor "responsável" do Kanban (qualquer autenticado)
+router.get('/auth/agents', authenticateToken, async (req, res) => {
+    try {
+        const all = await listAgents(getDb());
+        res.json(all
+            .filter((a) => a.status === 'active')
+            .map((a) => ({ id: a.id, name: a.name, department: a.department, role: a.role })));
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 export default router;
