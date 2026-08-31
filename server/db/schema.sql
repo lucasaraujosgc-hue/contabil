@@ -196,3 +196,27 @@ CREATE TABLE IF NOT EXISTS agent_settings (
   agent_id  INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   settings  TEXT
 );
+
+-- ── Conversas do WhatsApp (multi-atendimento) ────────────────────────────────
+-- Metadados de atendimento de cada conversa. Antes viviam num JSON blob em
+-- user_settings.waKanban.cards — o que perdia alterações com vários atendentes.
+CREATE TABLE IF NOT EXISTS wa_conversations (
+  chat_id            TEXT PRIMARY KEY,
+  name               TEXT,
+  col_id             TEXT,
+  department         TEXT,
+  assigned_agent_id  INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+  status             TEXT NOT NULL DEFAULT 'open',   -- open | pending | resolved
+  tag_ids            TEXT NOT NULL DEFAULT '[]',     -- JSON array
+  note               TEXT,
+  last_inbound_at    BIGINT,                          -- unix ts da última msg do cliente
+  last_outbound_at   BIGINT,                          -- unix ts da última msg nossa
+  last_activity_at   BIGINT,
+  claimed_at         TIMESTAMPTZ,
+  resolved_at        TIMESTAMPTZ,
+  resolved_by        INTEGER,
+  created_at         TIMESTAMPTZ DEFAULT now(),
+  updated_at         TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_conv_assigned ON wa_conversations(assigned_agent_id);
+CREATE INDEX IF NOT EXISTS idx_wa_conv_status   ON wa_conversations(status);

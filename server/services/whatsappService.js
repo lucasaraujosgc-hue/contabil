@@ -7,6 +7,7 @@ import { DATA_DIR, UPLOADS_DIR } from '../config.js';
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { waClients, broadcastWaEvent } from '../state/waState.js';
+import { touchConversation } from './conversations.js';
 
 export { MessageMedia };
 
@@ -241,6 +242,10 @@ export const getWaClientWrapper = (username) => {
                 try {
                     await db.prepare("UPDATE whatsapp_messages SET contactName = ? WHERE id = ?").run(contactName, msg.id._serialized);
                 } catch (e) {}
+                try {
+                    const conv = await touchConversation(db, chatId, { fromMe: false, ts: msg.timestamp, name: contactName });
+                    if (conv) broadcastWaEvent(username, 'conversation_update', conv);
+                } catch (e) { log(`[conv] touch inbound ${chatId}: ${e.message}`); }
             }
 
             if (msg.hasMedia) {
@@ -380,11 +385,15 @@ export const getWaClientWrapper = (username) => {
                     try {
                         await db.prepare("UPDATE whatsapp_messages SET contactName = ? WHERE id = ?").run(contactName, msg.id._serialized);
                     } catch (e) {}
+                    try {
+                        const conv = await touchConversation(db, chatId, { fromMe: true, ts: msg.timestamp, name: contactName });
+                        if (conv) broadcastWaEvent(username, 'conversation_update', conv);
+                    } catch (e) { log(`[conv] touch outbound ${chatId}: ${e.message}`); }
                 }
             }
         });
 
-        client.on('qr', (qr) => { 
+        client.on('qr', (qr) => {
             log(`[WhatsApp Event] QR Code gerado para ${username}`);
             QRCode.toDataURL(qr, (err, url) => { 
                 if (err) log(`[WhatsApp Event] Erro QR`, err);

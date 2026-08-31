@@ -8,6 +8,7 @@ import { log } from './server/logger.js';
 import { initDb, getDb } from './server/db/index.js';
 import { assertAuthConfigured } from './server/middleware/auth.js';
 import { seedAdminIfEmpty } from './server/services/agents.js';
+import { migrateConversations } from './server/services/conversations.js';
 import { setupRoutes } from './server/routes/index.js';
 import { startCron } from './server/services/cronService.js';
 
@@ -17,6 +18,7 @@ log(`Diretório de dados: ${DATA_DIR}`);
 assertAuthConfigured();
 await initDb();
 await seedAdminIfEmpty(getDb());
+await migrateConversations(getDb());
 
 const app = express();
 app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
