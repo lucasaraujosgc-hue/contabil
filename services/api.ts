@@ -290,6 +290,20 @@ export const api = {
     return handleResponse(res);
   },
 
+  // progresso de um envio em massa (isBulk) — o POST devolve { jobId, total }
+  getSendJobStatus: async (jobId: string): Promise<{
+    id: string; status: 'running' | 'done' | 'canceled' | 'error';
+    total: number; done: number; sent: number; skipped: number;
+    errors: string[]; currentName: string | null; startedAt: number; finishedAt: number | null;
+  }> => {
+    const res = await fetch(`${API_URL}/send-documents/status/${encodeURIComponent(jobId)}`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+  cancelSendJob: async (jobId: string): Promise<{ success: boolean }> => {
+    const res = await fetch(`${API_URL}/send-documents/cancel/${encodeURIComponent(jobId)}`, { method: 'POST', headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
   // Dashboard Data
   getRecentSends: async (): Promise<any[]> => {
     const res = await fetch(`${API_URL}/recent-sends`, { headers: getAuthHeader() });

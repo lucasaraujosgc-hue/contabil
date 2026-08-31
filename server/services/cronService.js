@@ -211,8 +211,8 @@ async function tick() {
                         if (companySpecificDocs.length > 0) {
                             for (const doc of companySpecificDocs) {
                                 if (doc.category) {
-                                    await db.prepare(`INSERT INTO sent_logs (companyName, docName, category, sentAt, channels, status) VALUES (?, ?, ?, datetime('now', 'localtime'), ?, 'success')`)
-                                        .run(company.name, doc.docName, doc.category, JSON.stringify(channels));
+                                    await db.prepare(`INSERT INTO sent_logs (companyName, docName, category, sentAt, channels, status) VALUES (?, ?, ?, ?, ?, 'success')`)
+                                        .run(company.name, doc.docName, doc.category, new Date().toISOString(), JSON.stringify(channels));
 
                                     await db.prepare(`INSERT INTO document_status (companyId, category, competence, status) VALUES (?, ?, ?, 'sent') ON CONFLICT(companyId, category, competence) DO UPDATE SET status='sent'`)
                                         .run(doc.companyId, doc.category, doc.competence);

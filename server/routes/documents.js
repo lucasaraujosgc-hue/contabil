@@ -6,14 +6,9 @@ import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { authenticateToken, requirePermission } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
-import { getWaClientWrapper, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
-import { emailTransporter, saveToImapSentFolder, buildEmailHtml, processMessageVars, resolveFromAddress } from '../services/emailService.js';
-import { acquireSendLock, releaseSendLock, wasRecentlySent, markSent } from '../services/sendLock.js';
-import crypto from 'crypto';
+import { acquireSendLock, releaseSendLock } from '../services/sendLock.js';
+import { createJob, jobSnapshot, cancelJob, runSendDocuments } from '../services/sendJobs.js';
 const router = express.Router();
-
-const waTextKey = (chatId, body) => `${chatId}|txt|${crypto.createHash('sha1').update(body || '').digest('hex')}`;
-const waMediaKey = (chatId, name, len) => `${chatId}|media|${name}|${len}`;
 
 router.post('/upload', requirePermission('documents','create'), upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
@@ -96,7 +91,12 @@ router.post('/documents/status', requirePermission('documents','edit'), async (r
 });
 
 router.post('/send-documents', requirePermission('documents','edit'), async (req, res) => {
-    const { documents, subject, messageBody, channels, emailSignature, whatsappTemplate, whatsappFileSignature, isBulk } = req.body;
+    const payload = req.body || {};
+    const { documents, channels, isBulk } = payload;
+
+    if (!Array.isArray(documents) || documents.length === 0) {
+        return res.status(400).json({ error: 'Nenhum documento para enviar.' });
+    }
 
     // Trava anti-duplicação: só um envio por vez pra esta sessão de WhatsApp.
     const lockKey = req.user || 'default';
@@ -104,196 +104,58 @@ router.post('/send-documents', requirePermission('documents','edit'), async (req
         return res.status(409).json({ error: 'Já existe um envio em andamento. Aguarde ele terminar antes de iniciar outro.' });
     }
 
-    // Se o proxy/cliente derrubar a conexão no meio, para de enviar em vez de
-    // seguir o loop até o fim (a mensagem já iria dobrar num retry).
+    const total = new Set(documents.map((d) => d.companyId)).size;
+    log(`[send-documents] ${documents.length} documento(s) p/ ${total} empresa(s). isBulk=${!!isBulk}. Channels: ${JSON.stringify(channels)}`);
+
+    // ── envio em massa: responde na hora, processa em background, cliente acompanha o job
+    if (isBulk) {
+        const job = createJob({ user: req.user, total });
+        const agentRaw = req.agentRaw;
+        (async () => {
+            try {
+                await runSendDocuments({ user: req.user, agentRaw, payload, job });
+                job.status = job.canceled ? 'canceled' : 'done';
+            } catch (e) {
+                log('[send-documents job] falha fatal', e);
+                job.status = 'error';
+                job.errors.push(e.message || 'Erro fatal no envio');
+            } finally {
+                job.finishedAt = Date.now();
+                releaseSendLock(lockKey);
+            }
+        })();
+        return res.status(202).json({ jobId: job.id, total });
+    }
+
+    // ── envio normal: síncrono (para o loop se a conexão do cliente cair)
     let aborted = false;
     res.on('close', () => { if (!res.writableFinished) aborted = true; });
-
     try {
-    log(`[API send-documents] Iniciando envio de ${documents.length} documentos. Channels: ${JSON.stringify(channels)}`);
-
-    const db = getDb(req.user);
-    const waWrapper = getWaClientWrapper(req.user);
-    const client = waWrapper.client;
-    const clientReady = waWrapper.status === 'connected';
-
-    if (channels.whatsapp && !clientReady) {
-        log(`[API send-documents] AVISO: Tentativa de envio via WhatsApp, mas cliente não está conectado.`);
-    }
-
-    let successCount = 0;
-    let errors = [];
-    let sentIds = [];
-    let skipped = 0; // envios ignorados por já terem saído nos últimos 10 min
-    const whatsappDone = new Set(); // chatIds já atendidos nesta execução
-
-    const docsByCompany = documents.reduce((acc, doc) => {
-        if (!acc[doc.companyId]) acc[doc.companyId] = [];
-        acc[doc.companyId].push(doc);
-        return acc;
-    }, {});
-
-    const companyIds = Object.keys(docsByCompany);
-
-    for (const companyId of companyIds) {
-        if (aborted) { log('[API send-documents] conexão encerrada pelo cliente — interrompendo o restante do envio'); break; }
-        const companyDocs = docsByCompany[companyId];
-
-        try {
-            const company = await db.prepare("SELECT * FROM companies WHERE id = ?").get(companyId);
-            if (!company) { errors.push(`Empresa ID ${companyId} não encontrada.`); continue; }
-
-            const sortedDocs = [...companyDocs].sort((a, b) => {
-                const dateA = a.dueDate ? a.dueDate.split('/').reverse().join('') : '99999999';
-                const dateB = b.dueDate ? b.dueDate.split('/').reverse().join('') : '99999999';
-                return dateA.localeCompare(dateB);
-            });
-
-            const validAttachments = [];
-            for (const doc of sortedDocs) {
-                if (doc.serverFilename) {
-                    const filePath = path.join(UPLOADS_DIR, doc.serverFilename);
-                    if (fs.existsSync(filePath)) {
-                        validAttachments.push({
-                            filename: doc.docName,
-                            path: filePath,
-                            contentType: 'application/pdf',
-                            docData: doc
-                        });
-                    } else {
-                        log(`[API send-documents] Arquivo físico não encontrado: ${filePath}`);
-                        errors.push(`Arquivo sumiu do servidor: ${doc.docName}`);
-                    }
-                }
-            }
-
-            const processedMessageBody = processMessageVars(messageBody, company);
-
-            if (channels.email && company.email) {
-                try {
-                    const finalHtml = buildEmailHtml(processedMessageBody, companyDocs, emailSignature);
-                    const finalSubject = `${subject} - Competência: ${companyDocs[0].competence || 'N/A'}`; 
-                    
-                    const emailList = company.email.split(',').map(e => e.trim()).filter(e => e);
-                    const mainEmail = emailList[0];
-                    const ccEmails = emailList.slice(1).join(', ');
-
-                    if (mainEmail) {
-                        const fromAddress = resolveFromAddress(req.agentRaw);
-
-                        const mailOptions = {
-                            from: fromAddress,
-                            to: mainEmail,
-                            cc: ccEmails, 
-                            subject: finalSubject,
-                            html: finalHtml,
-                            attachments: validAttachments.map(a => ({ filename: a.filename, path: a.path, contentType: a.contentType }))
-                        };
-
-                        await emailTransporter.sendMail(mailOptions);
-                        await saveToImapSentFolder(mailOptions).catch(err => 
-                            log('[Email] Falha ao salvar no IMAP', err)
-                        );
-                        log(`[Email] Enviado para ${company.name} (${mainEmail})`);
-                    }
-                } catch (e) { 
-                    log(`[Email] Erro envio ${company.name}`, e);
-                    errors.push(`Erro Email ${company.name}: ${e.message}`); 
-                }
-            }
-
-            let number = company.whatsapp ? company.whatsapp.replace(/\D/g, '') : '';
-            if (number && !number.startsWith('55')) number = '55' + number;
-            const chatId = number ? `${number}@c.us` : '';
-
-            if (channels.whatsapp && company.whatsapp && clientReady && whatsappDone.has(chatId)) {
-                log(`[API send-documents] ${chatId} já recebeu nesta execução — ignorando duplicata`);
-            } else if (channels.whatsapp && company.whatsapp && clientReady) {
-                whatsappDone.add(chatId);
-                try {
-                    const listaArquivos = validAttachments.map(att =>
-                        `• ${att.docData.docName} (${att.docData.category || 'Anexo'}, Venc: ${att.docData.dueDate || 'N/A'})`
-                    ).join('\n');
-                    
-                    const whatsappSignature = isBulk ? (whatsappFileSignature || "") : (whatsappTemplate || "");
-                        
-                    let mensagemCompleta = processedMessageBody;
-                    
-                    if (listaArquivos) {
-                        mensagemCompleta += `\n\n*Arquivos enviados:*\n${listaArquivos}`;
-                    }
-                    
-                    mensagemCompleta += `\n\n${whatsappSignature}`;
-
-                    const txtKey = waTextKey(chatId, mensagemCompleta);
-                    if (wasRecentlySent(txtKey)) {
-                        skipped++;
-                        log(`[API send-documents] texto idêntico já enviado p/ ${chatId} nos últimos 10min — ignorando`);
-                    } else {
-                        await safeSendMessage(client, chatId, mensagemCompleta);
-                        markSent(txtKey);
-                    }
-
-                    for (const att of validAttachments) {
-                        try {
-                            const fileData = fs.readFileSync(att.path).toString('base64');
-                            const mKey = waMediaKey(chatId, att.filename, fileData.length);
-                            if (wasRecentlySent(mKey)) { skipped++; continue; }
-                            const media = new MessageMedia(att.contentType, fileData, att.filename);
-
-                            await safeSendMessage(client, chatId, media);
-                            markSent(mKey);
-
-                            await new Promise(r => setTimeout(r, 3000));
-                        } catch (mediaErr) {
-                            log(`[WhatsApp] Erro envio mídia ${att.filename}`, mediaErr);
-                            errors.push(`Erro mídia WhatsApp (${att.filename}): ${mediaErr.message}`);
-                        }
-                    }
-                } catch (e) { 
-                    log(`[WhatsApp] Erro envio ${company.name}`, e);
-                    errors.push(`Erro Zap ${company.name}: ${e.message}`); 
-                }
-            } else if (channels.whatsapp && !clientReady) {
-                 errors.push(`WhatsApp não conectado. Não foi possível enviar para ${company.name}`);
-            }
-
-            for (const doc of companyDocs) {
-                if (doc.category) { 
-                    await db.prepare(`INSERT INTO sent_logs (companyName, docName, category, sentAt, channels, status) VALUES (?, ?, ?, datetime('now', 'localtime'), ?, 'success')`)
-                        .run(company.name, doc.docName, doc.category, JSON.stringify(channels));
-                    
-                    await db.prepare(`INSERT INTO document_status (companyId, category, competence, status) VALUES (?, ?, ?, 'sent') ON CONFLICT(companyId, category, competence) DO UPDATE SET status='sent'`)
-                        .run(doc.companyId, doc.category, doc.competence);
-                }
-                
-                if (doc.serverFilename) {
-                    try {
-                        const filePath = path.join(UPLOADS_DIR, doc.serverFilename);
-                        if (fs.existsSync(filePath)) {
-                            const stat = fs.statSync(filePath);
-                            await db.prepare(`INSERT INTO file_gallery (serverFilename, originalName, mimeType, size, contact, channel, direction, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-                                .run(doc.serverFilename, doc.docName, 'application/pdf', stat.size, company.name, channels.whatsapp ? (channels.email ? 'Email/WhatsApp' : 'WhatsApp') : 'Email', 'sent', new Date().toISOString());
-                        }
-                    } catch (e) {}
-                }
-
-                if (doc.id) sentIds.push(doc.id);
-                successCount++;
-            }
-        } catch (e) { 
-            log(`[API send-documents] Falha geral empresa ${companyId}`, e);
-            errors.push(`Falha geral empresa ${companyId}: ${e.message}`); 
-        }
-    }
-    
-    res.json({ success: true, sent: successCount, skipped, sentIds, errors, aborted });
+        const r = await runSendDocuments({
+            user: req.user, agentRaw: req.agentRaw, payload,
+            shouldStop: () => aborted,
+        });
+        res.json({ success: true, sent: r.sent, skipped: r.skipped, sentIds: r.sentIds, errors: r.errors, aborted: r.aborted });
     } catch (fatal) {
-        log('[API send-documents] Falha fatal', fatal);
+        log('[send-documents] Falha fatal', fatal);
         if (!res.headersSent) res.status(500).json({ error: fatal.message || 'Erro no envio' });
     } finally {
         releaseSendLock(lockKey);
     }
+});
+
+// progresso de um envio em massa
+router.get('/send-documents/status/:jobId', requirePermission('documents','view'), (req, res) => {
+    const job = jobSnapshot(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'Envio não encontrado (pode ter expirado ou o servidor reiniciou).' });
+    res.json(job);
+});
+
+// cancela o restante de um envio em massa (o que já saiu não volta)
+router.post('/send-documents/cancel/:jobId', requirePermission('documents','edit'), (req, res) => {
+    const ok = cancelJob(req.params.jobId, req.user);
+    if (!ok) return res.status(404).json({ error: 'Envio não encontrado.' });
+    res.json({ success: true });
 });
 
 router.get('/recent-sends', requirePermission('documents','view'), async (req, res) => {

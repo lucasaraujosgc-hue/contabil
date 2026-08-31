@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect } from 'react';
-import { Mail, MessageCircle, Calendar, Send, CheckSquare, Square, ArrowLeft, Loader2, Upload, X, Search, Filter } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Mail, MessageCircle, Calendar, Send, CheckSquare, Square, ArrowLeft, Loader2, Upload, X, Search, Filter, CheckCircle2, XCircle, Ban } from 'lucide-react';
 import { Company, ScheduledMessage, UserSettings } from '../types';
 import { api } from '../services/api';
 
@@ -15,6 +15,13 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [selectedCompanies, setSelectedCompanies] = useState<number[]>([]);
+
+  // acompanhamento do envio em massa (job em background no servidor)
+  type Job = Awaited<ReturnType<typeof api.getSendJobStatus>>;
+  const [job, setJob] = useState<Job | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  useEffect(() => stopPolling, []);
 
   // Form Data
   const [subject, setSubject] = useState('Comunicado Importante');
@@ -145,7 +152,7 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
               // vamos permitir, mas a API server.js precisa ser capaz de enviar só texto.
               // Ajustei server.js para permitir envio sem anexo (código anterior já tinha lógica para anexos, mas o loop depende de companyDocs).
               
-              const r = await api.sendDocuments({
+              const { jobId, total } = await api.sendDocuments({
                   documents: documentsPayload,
                   subject: subject,
                   messageBody: message,
@@ -156,23 +163,48 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
                   isBulk: true,
               });
 
-              const parts = [`Envio processado: ${r?.sent ?? 0} destinatário(s).`];
-              if (r?.skipped) parts.push(`${r.skipped} ignorado(s) por já terem recebido a mesma mensagem nos últimos 10 min.`);
-              if (r?.aborted) parts.push('A conexão caiu no meio — parte do envio pode não ter saído. NÃO reenvie na hora: espere alguns minutos e confira antes.');
-              if (r?.errors?.length) parts.push(`${r.errors.length} erro(s).`);
-              alert(parts.join('\n'));
+              // envio roda em background no servidor — acompanhamos por polling
+              setJob({
+                  id: jobId, status: 'running',
+                  total: total || documentsPayload.length, done: 0, sent: 0, skipped: 0,
+                  errors: [], currentName: null, startedAt: Date.now(), finishedAt: null,
+              });
+              stopPolling();
+              pollRef.current = window.setInterval(async () => {
+                  try {
+                      const s = await api.getSendJobStatus(jobId);
+                      setJob(s);
+                      if (s.status !== 'running') { stopPolling(); setSending(false); }
+                  } catch {
+                      stopPolling(); setSending(false);
+                      setJob(j => j ? { ...j, status: 'error', errors: ['Perdi o progresso do envio (o servidor pode ter reiniciado). Confira os Envios Recentes antes de refazer.'] } : j);
+                  }
+              }, 2000);
+              return; // o painel de progresso assume daqui; NÃO cai no finally que desliga o "sending"
           }
-          
-          // Reset
+
+          // Reset (só para o fluxo de agendamento)
           setAttachment(null);
           setSubject("");
-          
+          setSending(false);
+
       } catch (e: any) {
           console.error(e);
           alert("Erro ao processar envio: " + e.message);
-      } finally {
           setSending(false);
       }
+  };
+
+  const cancelJob = async () => {
+      if (!job) return;
+      try { await api.cancelSendJob(job.id); } catch { /* ignora */ }
+      setJob(j => j ? { ...j, status: 'canceled' } : j);
+  };
+  const closeJobPanel = () => {
+      stopPolling();
+      setJob(null);
+      setSending(false);
+      setAttachment(null);
   };
 
   const areAllFilteredSelected = filteredCompanies.length > 0 && filteredCompanies.every(c => selectedCompanies.includes(c.id));
@@ -187,6 +219,8 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
         </h1>
         <p className="text-gray-500">Envie comunicados ou documentos para múltiplas empresas.</p>
       </div>
+
+      {job && <SendProgressPanel job={job} onCancel={cancelJob} onClose={closeJobPanel} />}
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
@@ -342,6 +376,61 @@ const BulkSend: React.FC<BulkSendProps> = ({ userSettings }) => {
               </button>
           </div>
       </div>
+    </div>
+  );
+};
+
+// ─── Painel de progresso do envio em massa ─────────────────────────────────
+const SendProgressPanel: React.FC<{
+  job: Awaited<ReturnType<typeof api.getSendJobStatus>>;
+  onCancel: () => void;
+  onClose: () => void;
+}> = ({ job, onCancel, onClose }) => {
+  const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
+  const running = job.status === 'running';
+  const meta = {
+    running: { cls: 'border-blue-200 bg-blue-50', icon: <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />, title: 'Enviando…' },
+    done: { cls: 'border-green-200 bg-green-50', icon: <CheckCircle2 className="w-5 h-5 text-green-600" />, title: 'Envio concluído' },
+    canceled: { cls: 'border-amber-200 bg-amber-50', icon: <Ban className="w-5 h-5 text-amber-600" />, title: 'Envio cancelado' },
+    error: { cls: 'border-red-200 bg-red-50', icon: <XCircle className="w-5 h-5 text-red-600" />, title: 'Envio interrompido' },
+  }[job.status];
+
+  return (
+    <div className={`rounded-xl border p-4 ${meta.cls}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 font-semibold text-gray-800">{meta.icon} {meta.title}</div>
+        {running
+          ? <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-md bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 flex items-center gap-1"><Ban className="w-3.5 h-3.5" /> Cancelar</button>
+          : <button onClick={onClose} className="text-xs px-3 py-1.5 rounded-md bg-white border border-gray-300 text-gray-700 hover:bg-gray-50">Fechar</button>}
+      </div>
+
+      <div className="mt-3">
+        <div className="h-2 rounded-full bg-white/70 overflow-hidden">
+          <div className="h-full bg-blue-600 transition-all" style={{ width: `${Math.max(pct, running ? 4 : pct)}%` }} />
+        </div>
+        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-600">
+          <span>{job.done} / {job.total} empresas</span>
+          <span>{job.sent} enviado(s)</span>
+          {job.skipped > 0 && <span>{job.skipped} ignorado(s) (duplicata &lt;10 min)</span>}
+          {job.errors.length > 0 && <span className="text-red-600">{job.errors.length} erro(s)</span>}
+          {running && job.currentName && <span className="text-gray-400">— {job.currentName}</span>}
+        </div>
+      </div>
+
+      {job.errors.length > 0 && (
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer text-gray-500">Ver erros</summary>
+          <ul className="mt-1 space-y-0.5 text-red-600 max-h-40 overflow-y-auto">
+            {job.errors.slice(0, 50).map((e, i) => <li key={i}>• {e}</li>)}
+          </ul>
+        </details>
+      )}
+
+      {!running && (
+        <p className="mt-2 text-xs text-gray-500">
+          O que já foi enviado não volta. Antes de refazer, confira em <strong>Envios Recentes</strong> / na conversa do cliente.
+        </p>
+      )}
     </div>
   );
 };
