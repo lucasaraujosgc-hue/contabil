@@ -126,7 +126,39 @@ docker run -p 3000:3000 --env-file .env -v cm_data:/app/data contabil-manager
 ```
 
 - O container traz o Chromium do sistema (`PUPPETEER_EXECUTABLE_PATH`).
-- `DATA_PATH=/app/data` guarda uploads e a sessão do WhatsApp — **monte um volume**.
 - Não há mais módulo nativo (o `pg` é JS puro) — o build não precisa de `python3/make/g++`.
 - Atrás de proxy: `TRUST_PROXY=1` (padrão). O link do convite usa
   `X-Forwarded-Proto/Host` quando `APP_BASE_URL` está vazio.
+
+### Volume — persistir **apenas `/app/data`**
+
+Tudo que precisa sobreviver a um redeploy fica em `DATA_PATH` (`/app/data`):
+
+| Caminho | O que é |
+|---|---|
+| `/app/data/whatsapp_auth_<USERS[0]>/` | sessão do WhatsApp (LocalAuth/Puppeteer) — **sem isso, QR novo a cada deploy** |
+| `/app/data/uploads/` | PDFs de guias, documentos, mídias recebidas do WhatsApp |
+| `/app/data/debug_whatsapp.log` | log |
+
+O banco (Postgres) tem volume próprio, gerenciado pelo serviço de Postgres do
+EasyPanel — não é problema do container do app.
+
+No EasyPanel: **Service → Mounts → Add → Volume**, nome `contabil-data`,
+mount path `/app/data`. Se der erro de permissão ao subir uploads, rode uma vez
+no shell do serviço: `chown -R node:node /app/data`.
+
+## Importar dados do sistema antigo (SQLite)
+
+`scripts/import-legacy.mjs` traz **empresas (com `companyHash`)**, configurações
+(categorias, palavras-chave, regras de vencimento, webhook do Portal do Cliente,
+assinaturas), pendências SITFIS, status de documentos e anotações de um `.db`
+antigo. **Ignora as conversas/mensagens do WhatsApp** (o que engorda o arquivo).
+Idempotente e não-destrutivo (só preenche o que falta).
+
+```bash
+# 1. coloque o .db num caminho acessível do container, ex. no volume:
+#    /app/data/legado.db   (via file manager do EasyPanel, scp, ou wget de um link)
+# 2. no shell do serviço:
+node scripts/import-legacy.mjs /app/data/legado.db --dry   # prévia
+node scripts/import-legacy.mjs /app/data/legado.db         # aplica
+```
