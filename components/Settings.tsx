@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { UserSettings, CategoryRule } from '../types';
 import { DOCUMENT_CATEGORIES } from '../constants';
-import { api } from '../services/api';
+import { api, auth } from '../services/api';
 
 interface SettingsProps {
   settings: UserSettings;
@@ -44,6 +44,8 @@ interface SerproServerStatus {
 }
 
 const Settings: React.FC<SettingsProps> = ({ settings, onSave }) => {
+  // Só o admin do .env mexe nas configs globais; colaborador só na própria assinatura.
+  const isEnvAdmin = !!auth.getAgent()?.isEnvAdmin;
   const [activeTab, setActiveTab] = useState<TabId>('signatures');
   const [formData, setFormData] = useState<UserSettings>(settings);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -304,7 +306,7 @@ const Settings: React.FC<SettingsProps> = ({ settings, onSave }) => {
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
             <User className="w-6 h-6 text-blue-600" /> Configurações do Usuário
           </h1>
-          <p className="text-gray-500">Gerencie assinaturas, categorias e automações.</p>
+          <p className="text-gray-500">{isEnvAdmin ? 'Gerencie assinaturas, categorias e automações.' : 'Configure suas assinaturas de e-mail e WhatsApp.'}</p>
         </div>
         {activeTab !== 'serpro' && (
           <button
@@ -322,14 +324,16 @@ const Settings: React.FC<SettingsProps> = ({ settings, onSave }) => {
         {/* Tabs */}
         <div className="flex border-b border-gray-200 overflow-x-auto">
           {tabBtn('signatures', 'Assinaturas', <Mail className="w-4 h-4" />)}
-          {tabBtn('categories', 'Criar Categorias', <Tag className="w-4 h-4" />)}
-          {tabBtn('documents', 'Colunas (Matriz)', <LayoutTemplate className="w-4 h-4" />)}
-          {tabBtn('bindings', 'Vinculações', <LinkIcon className="w-4 h-4" />)}
-          {tabBtn('due_dates', 'Vencimentos', <CalendarDays className="w-4 h-4" />)}
-          {tabBtn('company_categories', 'Tags Empresas', <Building2 className="w-4 h-4" />)}
-          {tabBtn('daily', 'Resumo Diário', <Clock className="w-4 h-4" />)}
-          {tabBtn('webhook', 'Portal do Cliente', <Globe className="w-4 h-4" />)}
-          {tabBtn('serpro', 'Integra Contador', <ShieldCheck className="w-4 h-4" />)}
+          {isEnvAdmin && <>
+            {tabBtn('categories', 'Criar Categorias', <Tag className="w-4 h-4" />)}
+            {tabBtn('documents', 'Colunas (Matriz)', <LayoutTemplate className="w-4 h-4" />)}
+            {tabBtn('bindings', 'Vinculações', <LinkIcon className="w-4 h-4" />)}
+            {tabBtn('due_dates', 'Vencimentos', <CalendarDays className="w-4 h-4" />)}
+            {tabBtn('company_categories', 'Tags Empresas', <Building2 className="w-4 h-4" />)}
+            {tabBtn('daily', 'Resumo Diário', <Clock className="w-4 h-4" />)}
+            {tabBtn('webhook', 'Portal do Cliente', <Globe className="w-4 h-4" />)}
+            {tabBtn('serpro', 'Integra Contador', <ShieldCheck className="w-4 h-4" />)}
+          </>}
         </div>
 
         <div className="p-6">

@@ -190,3 +190,9 @@ CREATE TABLE IF NOT EXISTS agents (
   created_at         TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_agents_username ON agents(username);
+
+-- Configurações por colaborador (só as assinaturas). O resto de user_settings é global.
+CREATE TABLE IF NOT EXISTS agent_settings (
+  agent_id  INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  settings  TEXT
+);

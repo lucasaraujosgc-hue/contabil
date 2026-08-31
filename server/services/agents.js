@@ -1,6 +1,15 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { log } from '../logger.js';
+import { tenant } from '../config.js';
+
+// "admin do .env" = o agente cujo username é o primeiro de USERS. Só ele mexe nas
+// configs globais (categorias, vencimentos, portal, SERPRO, kanban, resumo diário).
+export const isEnvAdmin = (agent) =>
+    !!(agent && agent.username && agent.username.toLowerCase() === tenant().toLowerCase());
+
+// Campos de settings que são POR COLABORADOR (o resto de user_settings é global).
+export const PERSONAL_SETTING_KEYS = ['emailSignature', 'whatsappTemplate', 'whatsappFileSignature'];
 
 // Abas do sistema com permissão granular (view / edit / create).
 export const PERMISSION_TABS = ['companies', 'documents', 'tasks', 'kanban', 'financeiro', 'settings'];
@@ -75,6 +84,7 @@ export function sanitizeAgent(row) {
         department: row.department || null,
         role: row.role,
         status: row.status,
+        isEnvAdmin: isEnvAdmin(row),
         permissions: parsePermissions(row.permissions),
         inviteExpired: row.status !== 'active' && row.invite_expires_at
             ? new Date(row.invite_expires_at).getTime() < Date.now()
@@ -94,6 +104,22 @@ export const getAgentByUsername = (db, username) =>
 
 export const listAgents = async (db) =>
     (await db.prepare('SELECT * FROM agents ORDER BY role DESC, name ASC').all()).map(sanitizeAgent);
+
+// --- configs por colaborador (assinaturas) ---
+export async function getAgentSettings(db, agentId) {
+    const row = await db.prepare('SELECT settings FROM agent_settings WHERE agent_id = ?').get(agentId);
+    if (!row || !row.settings) return null;
+    try { return JSON.parse(row.settings); } catch { return null; }
+}
+
+export async function saveAgentSettings(db, agentId, obj) {
+    const clean = {};
+    for (const k of PERSONAL_SETTING_KEYS) clean[k] = obj?.[k] ?? '';
+    await db.prepare(
+        `INSERT INTO agent_settings (agent_id, settings) VALUES (?, ?)
+         ON CONFLICT (agent_id) DO UPDATE SET settings = EXCLUDED.settings`
+    ).run(agentId, JSON.stringify(clean));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // primeiro boot: cria o admin a partir de USERS[0]/PASSWORDS[0]

@@ -571,6 +571,7 @@ router.get("/sitfis/config", async (req, res) => {
 // POST /api/pendencies/sitfis/config
 router.post("/sitfis/config", uploadCert.single("certificado"), async (req, res) => {
   try {
+    if (!req.agent?.isEnvAdmin) return res.status(403).json({ error: "Somente o administrador pode configurar o Integra Contador." });
     const db = getDb(req.user);
     const usuarioId = 1;
     const { consumer_key, consumer_secret, cert_senha, cnpj_contratante, ambiente } = req.body;
