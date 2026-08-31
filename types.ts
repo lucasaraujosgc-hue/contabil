@@ -109,17 +109,26 @@ export interface WaKanbanTag {
   color: string;
 }
 
+export interface WaKanbanDepartment {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface WaKanbanCard {
   id: string; // chatId
   colId: string;
   tagIds: string[];
   name: string;
+  department?: string;      // id de WaKanbanDepartment (setor da conversa)
+  assignedAgentId?: number; // id do colaborador responsável
 }
 
 export interface WaKanbanState {
   columns: WaKanbanColumn[];
   tags: WaKanbanTag[];
   cards: WaKanbanCard[];
+  departments?: WaKanbanDepartment[];
 }
 
 export interface UserSettings {

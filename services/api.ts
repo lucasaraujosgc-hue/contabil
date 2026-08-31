@@ -75,6 +75,23 @@ export const api = {
     return handleResponse(res);
   },
 
+  // lista enxuta de colaboradores ativos p/ o seletor "responsável" do Kanban
+  listTeamAgents: async (): Promise<{ id: number; name: string; department: string | null; role: string }[]> => {
+    const res = await fetch(`${API_URL}/auth/agents`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
+  // presença: heartbeat "estou com essa conversa aberta" -> devolve quem mais está
+  setChatViewing: async (chatId: string): Promise<{ viewers: { agentId: number; name: string; department: string | null; since: number }[] }> => {
+    const res = await fetch(`${API_URL}/whatsapp/viewing/${encodeURIComponent(chatId)}`, { method: 'POST', headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+  clearChatViewing: async (chatId: string): Promise<void> => {
+    try {
+      await fetch(`${API_URL}/whatsapp/viewing/${encodeURIComponent(chatId)}`, { method: 'DELETE', headers: getAuthHeader(), keepalive: true });
+    } catch { /* best-effort */ }
+  },
+
   // --- Convite / definição de acesso (páginas públicas) ---
   getInvite: async (token: string): Promise<{ name: string; email: string; reset: boolean }> => {
     const res = await fetch(`${API_URL}/auth/invite?token=${encodeURIComponent(token)}`);

@@ -73,6 +73,13 @@ Lucas Araújo`,
       { id: 't1', name: 'Suporte', color: '#ec4899' },
       { id: 't2', name: 'Financeiro', color: '#14b8a6' }
     ],
+    departments: [
+      { id: 'd_fiscal', name: 'Fiscal', color: '#2563eb' },
+      { id: 'd_contabil', name: 'Contábil', color: '#7c3aed' },
+      { id: 'd_pessoal', name: 'Pessoal / RH', color: '#059669' },
+      { id: 'd_financeiro', name: 'Financeiro', color: '#d97706' },
+      { id: 'd_atendimento', name: 'Atendimento', color: '#0891b2' }
+    ],
     cards: []
   }
 };

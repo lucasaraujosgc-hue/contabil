@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
+import {
   Building2, CheckCircle2, Clock, AlertCircle, Loader2, Bot, Power, User, Trash2,
-  Plus, MoreHorizontal, MessageCircle, Settings, X, Search, Phone, Send, Mic, 
-  Paperclip, Music, FileText, Image as ImageIcon, RefreshCw, History, Download, Calendar
+  Plus, MoreHorizontal, MessageCircle, Settings, X, Search, Phone, Send, Mic,
+  Paperclip, Music, FileText, Image as ImageIcon, RefreshCw, History, Download, Calendar,
+  Eye, Users as UsersIcon
 } from 'lucide-react';
 import { UserSettings, WaKanbanState, WaKanbanColumn, WaKanbanTag, WaKanbanCard } from '../types';
-import { api } from '../services/api';
+import { api, auth } from '../services/api';
 import ReactMarkdown from 'react-markdown';
 
 // Helper: resolve display label for a chatId
@@ -57,6 +58,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const [transcribingMap, setTranscribingMap] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [tagMenuCardId, setTagMenuCardId] = useState<string | null>(null);
+  const [teamAgents, setTeamAgents] = useState<{ id: number; name: string; department: string | null; role: string }[]>([]);
+  const [viewFilter, setViewFilter] = useState<'all' | 'my_dept' | 'mine'>('all');
+  const [chatViewers, setChatViewers] = useState<{ agentId: number; name: string; department: string | null; since: number }[]>([]);
+  const me = auth.getAgent();
   const [chatDetailsMap, setChatDetailsMap] = useState<Record<string, { profilePicUrl?: string | null, lastMessage?: string, lastMessageFromMe?: boolean, name?: string, number?: string | null }>>({});
   const [expandedMediaUrl, setExpandedMediaUrl] = useState<string | null>(null);
   const [expandedMediaType, setExpandedMediaType] = useState<'image' | 'video' | 'document' | null>(null);
@@ -87,6 +92,26 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const kanbanState: WaKanbanState = userSettings.waKanban || { columns: [], tags: [], cards: [] };
+  const departments = kanbanState.departments || [];
+  const getDept = (id?: string) => (id ? departments.find(d => d.id === id) : undefined);
+  const getAgent = (id?: number) => (id ? teamAgents.find(a => a.id === id) : undefined);
+  const initials = (n?: string) => (n || '?').split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+
+  // Atualiza um campo (department / assignedAgentId / etc.) de um card, criando-o se preciso.
+  const patchCard = (cardId: string, cardName: string, patch: Partial<WaKanbanCard>) => {
+    const newCards = [...kanbanState.cards];
+    let idx = newCards.findIndex(c => c.id === cardId);
+    if (idx < 0) {
+      newCards.push({ id: cardId, colId: kanbanState.columns[0]?.id || '', tagIds: [], name: cardName || '' });
+      idx = newCards.length - 1;
+    }
+    newCards[idx] = { ...newCards[idx], ...patch };
+    updateKanbanState({ ...kanbanState, cards: newCards });
+  };
+
+  useEffect(() => {
+    api.listTeamAgents().then(setTeamAgents).catch(() => {});
+  }, []);
 
   const handleToggleAI = async () => {
     const newValue = !aiEnabled;
@@ -300,7 +325,9 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           profilePicUrl: details.profilePicUrl !== undefined ? details.profilePicUrl : chat.profilePicUrl,
           timestamp: chat.timestamp,
           colId: existingCard ? existingCard.colId : (firstColId || ''),
-          tagIds: existingCard ? existingCard.tagIds : []
+          tagIds: existingCard ? existingCard.tagIds : [],
+          department: existingCard?.department,
+          assignedAgentId: existingCard?.assignedAgentId
       };
   });
 
@@ -317,21 +344,31 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
               profilePicUrl: details.profilePicUrl || null,
               timestamp: 0,
               colId: card.colId || (firstColId || ''),
-              tagIds: card.tagIds || []
+              tagIds: card.tagIds || [],
+              department: card.department,
+              assignedAgentId: card.assignedAgentId
           });
       }
   });
 
   const filteredCards = mergedCards.filter(card => {
+      // Filtro de atendimento (Ver: Todos / Meu setor / Atribuídos a mim)
+      if (viewFilter === 'mine' && card.assignedAgentId !== me?.id) return false;
+      if (viewFilter === 'my_dept') {
+          const dept = getDept(card.department);
+          const mineDept = (me?.department || '').toLowerCase();
+          if (!dept || !mineDept || dept.name.toLowerCase() !== mineDept) return false;
+      }
+
       if (!searchTerm) return true;
       const term = searchTerm.toLowerCase();
-      
+
       const safeName = card.name || '';
       const safeId = card.id || '';
-      
+
       if (safeName.toLowerCase().includes(term)) return true;
       if (safeId.toLowerCase().includes(term)) return true;
-      
+
       const hasMatchingTag = card.tagIds.some(tid => {
           const tag = kanbanState.tags.find(t => t.id === tid);
           return tag && (tag.name || '').toLowerCase().includes(term);
@@ -550,6 +587,27 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
     }
   };
 
+  // Presença: enquanto a conversa está aberta, bate heartbeat e mostra quem mais está vendo.
+  useEffect(() => {
+    if (!activeChat) { setChatViewers([]); return; }
+    const chatId = activeChat.id._serialized || activeChat.id;
+    let alive = true;
+    const beat = async () => {
+      try {
+        const r = await api.setChatViewing(chatId);
+        if (alive) setChatViewers(r.viewers || []);
+      } catch { /* ignore */ }
+    };
+    beat();
+    const iv = setInterval(beat, 25000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+      api.clearChatViewing(chatId);
+      setChatViewers([]);
+    };
+  }, [activeChat?.id?._serialized]);
+
   // loadMoreMessages corrigido - scroll infinito
   const loadMoreMessages = async () => {
     if (!activeChat || chatLoading) return;
@@ -734,9 +792,11 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
       _optimistic: true
     }));
     if (mediaToSend.length === 0 && textToSend.trim()) {
+      // espelha o prefixo *Nome:* que o backend adiciona no envio manual
+      const prefixedPreview = `*${(me?.name || 'Você')}:* ${textToSend}`;
       optimisticMsgs.push({
         id: { _serialized: `optimistic_${Date.now()}`, id: `optimistic_${Date.now()}` },
-        body: textToSend,
+        body: prefixedPreview,
         timestamp: Math.floor(Date.now() / 1000),
         fromMe: true,
         type: 'chat',
@@ -842,7 +902,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                <div className="pl-3 flex items-center justify-center text-gray-400">
                   <Search className="w-4 h-4" />
                </div>
-               <input 
+               <input
                   type="text"
                   placeholder="Pesquisar (Nome, n°, tag)..."
                   value={searchTerm}
@@ -850,6 +910,16 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                   className="px-3 py-1.5 bg-transparent outline-none text-sm min-w-[180px]"
                />
            </div>
+           <select
+             value={viewFilter}
+             onChange={e => setViewFilter(e.target.value as any)}
+             title="Filtrar conversas"
+             className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white outline-none focus:border-blue-500"
+           >
+             <option value="all">Ver: Todos</option>
+             <option value="my_dept">Meu setor</option>
+             <option value="mine">Atribuídos a mim</option>
+           </select>
            <div className="flex bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
                <input 
                   type="text"
@@ -957,7 +1027,25 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                       {card.lastMessageFromMe && <CheckCircle2 className="w-3 h-3 text-blue-500 flex-shrink-0" />}
                                       <p className="truncate leading-tight">{card.lastMessage || 'Sem mensagem'}</p>
                                   </div>
-                                  
+
+                                  {(getDept(card.department) || getAgent(card.assignedAgentId)) && (
+                                    <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                                      {getDept(card.department) && (
+                                        <span className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold flex items-center gap-1"
+                                          style={{ backgroundColor: `${getDept(card.department)!.color}1a`, color: getDept(card.department)!.color }}>
+                                          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getDept(card.department)!.color }} />
+                                          {getDept(card.department)!.name}
+                                        </span>
+                                      )}
+                                      {getAgent(card.assignedAgentId) && (
+                                        <span className="text-[9px] px-1 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold flex items-center gap-1" title={`Responsável: ${getAgent(card.assignedAgentId)!.name}`}>
+                                          <span className="w-3.5 h-3.5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[7px]">{initials(getAgent(card.assignedAgentId)!.name)}</span>
+                                          <span className="truncate max-w-[80px]">{getAgent(card.assignedAgentId)!.name}</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
                                   <div className="flex items-center justify-between mt-2">
                                       <div className="flex flex-wrap gap-1 items-center flex-1 min-w-0">
                                           {card.tagIds.map(tid => {
@@ -986,7 +1074,25 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                               </button>
                                               
                                               {tagMenuCardId === card.id && (
-                                                  <div className="absolute right-0 bottom-full mb-2 bg-white border border-gray-100 shadow-xl rounded-lg p-2 w-48 z-50 animate-in fade-in zoom-in duration-150" onClick={e => e.stopPropagation()}>
+                                                  <div className="absolute right-0 bottom-full mb-2 bg-white border border-gray-100 shadow-xl rounded-lg p-2 w-56 z-50 animate-in fade-in zoom-in duration-150" onClick={e => e.stopPropagation()}>
+                                                      <div className="text-xs font-semibold text-gray-500 mb-1 px-1">Setor</div>
+                                                      <select
+                                                          value={card.department || ''}
+                                                          onChange={(e) => patchCard(card.id, card.name, { department: e.target.value || undefined })}
+                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 mb-2 outline-none focus:border-blue-500"
+                                                      >
+                                                          <option value="">— sem setor —</option>
+                                                          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                                                      </select>
+                                                      <div className="text-xs font-semibold text-gray-500 mb-1 px-1">Responsável</div>
+                                                      <select
+                                                          value={card.assignedAgentId || ''}
+                                                          onChange={(e) => patchCard(card.id, card.name, { assignedAgentId: e.target.value ? Number(e.target.value) : undefined })}
+                                                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 mb-2 outline-none focus:border-blue-500"
+                                                      >
+                                                          <option value="">— ninguém —</option>
+                                                          {teamAgents.map(a => <option key={a.id} value={a.id}>{a.name}{a.department ? ` (${a.department})` : ''}</option>)}
+                                                      </select>
                                                       <div className="text-xs font-semibold text-gray-500 mb-2 px-1">Tags</div>
                                                       <div className="max-h-40 overflow-y-auto space-y-1 scrollbar-thin">
                                                           {kanbanState.tags.map(t => {
@@ -1110,6 +1216,35 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                              </button>
                           </div>
                       </div>
+
+                      {/* Departments Config */}
+                      <div>
+                          <h4 className="font-semibold text-gray-700 mb-1 border-b pb-2">Setores</h4>
+                          <p className="text-xs text-gray-400 mb-3">Usados no card da conversa e no cadastro de colaboradores.</p>
+                          <div className="space-y-2">
+                             {departments.map(dep => (
+                                 <div key={dep.id} className="flex gap-2 items-center">
+                                     <input type="color" value={dep.color} onChange={e => {
+                                         const next = departments.map(d => d.id === dep.id ? {...d, color: e.target.value} : d);
+                                         updateKanbanState({...kanbanState, departments: next});
+                                     }} className="w-10 h-10 p-1 rounded cursor-pointer" />
+                                     <input type="text" value={dep.name} onChange={e => {
+                                         const next = departments.map(d => d.id === dep.id ? {...d, name: e.target.value} : d);
+                                         updateKanbanState({...kanbanState, departments: next});
+                                     }} className="flex-1 border rounded px-3 py-2 outline-none focus:border-blue-500" />
+                                     <button onClick={() => {
+                                         if(confirm('Excluir setor?')) updateKanbanState({...kanbanState, departments: departments.filter(d => d.id !== dep.id)});
+                                     }} className="text-red-500 hover:bg-red-50 p-2 rounded">Excluir</button>
+                                 </div>
+                             ))}
+                             <button onClick={() => {
+                                 const next = [...departments, { id: 'dep_'+Date.now(), name: 'Novo Setor', color: '#64748b' }];
+                                 updateKanbanState({...kanbanState, departments: next});
+                             }} className="text-sm font-medium text-blue-600 hover:bg-blue-50 px-3 py-2 rounded flex items-center gap-1">
+                                 <Plus className="w-4 h-4"/> Adicionar Setor
+                             </button>
+                          </div>
+                      </div>
                   </div>
               </div>
           </div>
@@ -1152,7 +1287,33 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                               <p className="text-xs text-gray-500">{chatDetailsMap[activeChat.id._serialized || activeChat.id]?.number ? `+${chatDetailsMap[activeChat.id._serialized || activeChat.id].number}` : (activeChat.id._serialized || activeChat.id)}</p>
                           </div>
                       </div>
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                           {(() => {
+                               const acid = activeChat.id._serialized || activeChat.id;
+                               const acard = kanbanState.cards.find(c => c.id === acid);
+                               return (
+                                 <>
+                                   <select
+                                     value={acard?.department || ''}
+                                     onChange={(e) => patchCard(acid, activeChat.name, { department: e.target.value || undefined })}
+                                     title="Setor da conversa"
+                                     className="text-xs border rounded-md px-2 py-1.5 bg-white outline-none focus:border-blue-500"
+                                   >
+                                     <option value="">Setor…</option>
+                                     {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                                   </select>
+                                   <select
+                                     value={acard?.assignedAgentId || ''}
+                                     onChange={(e) => patchCard(acid, activeChat.name, { assignedAgentId: e.target.value ? Number(e.target.value) : undefined })}
+                                     title="Colaborador responsável"
+                                     className="text-xs border rounded-md px-2 py-1.5 bg-white outline-none focus:border-blue-500 max-w-[130px]"
+                                   >
+                                     <option value="">Responsável…</option>
+                                     {teamAgents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                   </select>
+                                 </>
+                               );
+                           })()}
                            <div className="relative group">
                                <button className="text-gray-500 hover:text-gray-700 bg-white p-1.5 rounded-md border text-xs flex items-center gap-1">
                                   Tags
@@ -1185,6 +1346,14 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                            <button onClick={() => setActiveChat(null)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6"/></button>
                       </div>
                   </div>
+
+                  {chatViewers.filter(v => v.agentId !== me?.id).length > 0 && (
+                      <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-[11px] text-amber-800 flex items-center gap-1.5">
+                          <Eye className="w-3.5 h-3.5 shrink-0" />
+                          {chatViewers.filter(v => v.agentId !== me?.id).map(v => `${v.department ? v.department + ' — ' : ''}${v.name}`).join(', ')}
+                          {chatViewers.filter(v => v.agentId !== me?.id).length === 1 ? ' está vendo esta conversa agora' : ' estão vendo esta conversa agora'}
+                      </div>
+                  )}
 
                   <div
                     className="flex-1 overflow-y-auto p-4 space-y-4"

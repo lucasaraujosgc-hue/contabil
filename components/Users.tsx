@@ -8,7 +8,7 @@ const TAB_LABELS: Record<string, string> = {
   companies: 'Empresas', documents: 'Documentos', tasks: 'Tarefas',
   kanban: 'Kanban', financeiro: 'Financeiro', settings: 'Configurações',
 };
-const DEPARTMENTS = ['Fiscal', 'Contábil', 'Pessoal / RH', 'Financeiro', 'Societário', 'Atendimento'];
+const FALLBACK_DEPARTMENTS = ['Fiscal', 'Contábil', 'Pessoal / RH', 'Financeiro', 'Societário', 'Atendimento'];
 
 type Perm = { view: boolean; edit: boolean; create: boolean };
 type Agent = {
@@ -43,6 +43,14 @@ const Users: React.FC = () => {
 
   const [editing, setEditing] = useState<Agent | 'new' | null>(null);
   const [confirming, setConfirming] = useState<{ agent: Agent; action: 'revoke' | 'reset-password' } | null>(null);
+  const [departments, setDepartments] = useState<string[]>(FALLBACK_DEPARTMENTS);
+
+  useEffect(() => {
+    api.getSettings().then((s: any) => {
+      const list = (s?.waKanban?.departments || []).map((d: any) => d.name).filter(Boolean);
+      if (list.length) setDepartments(list);
+    }).catch(() => {});
+  }, []);
 
   const reload = async () => {
     setLoading(true); setErr('');
@@ -141,6 +149,7 @@ const Users: React.FC = () => {
           mode={editing === 'new' ? 'new' : 'edit'}
           agent={editing === 'new' ? null : editing}
           tabs={tabs}
+          departments={departments}
           defaultPermissions={normalizePerms(defaultPermissions, tabs)}
           onClose={() => setEditing(null)}
           onSaved={(msg) => { setEditing(null); flash(msg); reload(); }}
@@ -166,10 +175,10 @@ const Users: React.FC = () => {
 
 // ─── Modal de criar / editar ────────────────────────────────────────────────
 const AgentModal: React.FC<{
-  mode: 'new' | 'edit'; agent: Agent | null; tabs: string[];
+  mode: 'new' | 'edit'; agent: Agent | null; tabs: string[]; departments: string[];
   defaultPermissions: Record<string, Perm>;
   onClose: () => void; onSaved: (msg: string) => void; onError: (m: string) => void;
-}> = ({ mode, agent, tabs, defaultPermissions, onClose, onSaved, onError }) => {
+}> = ({ mode, agent, tabs, departments, defaultPermissions, onClose, onSaved, onError }) => {
   const [name, setName] = useState(agent?.name || '');
   const [email, setEmail] = useState(agent?.email || '');
   const [department, setDepartment] = useState(agent?.department || '');
@@ -224,7 +233,7 @@ const AgentModal: React.FC<{
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-1">Setor</label>
             <input list="dept-list" value={department} onChange={(e) => setDepartment(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" placeholder="ex: Fiscal" />
-            <datalist id="dept-list">{DEPARTMENTS.map((d) => <option key={d} value={d} />)}</datalist>
+            <datalist id="dept-list">{departments.map((d) => <option key={d} value={d} />)}</datalist>
           </div>
 
           <div>
