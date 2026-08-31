@@ -93,15 +93,29 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
 - O **cron** lê `user_settings.emailSignature` como assinatura padrão dos envios
   agendados.
 
-## Kanban (WhatsApp) — `components/Dashboard.tsx` (o arquivo grande, 1800 linhas)
+## Kanban / atendimento (WhatsApp) — `components/Dashboard.tsx` (arquivo grande, ~2000 linhas)
 
-- Board **compartilhado**: colunas/tags/setores em `userSettings.waKanban`
-  (`WaKanbanState`). Config no botão de engrenagem (modal "Configurar Kanban").
-- `WaKanbanCard` = `{ id: chatId, colId, tagIds, name, department?, assignedAgentId? }`.
-  `patchCard(id, name, patch)` cria/atualiza e persiste via `updateKanbanState`.
-- Filtro "Ver: Todos / Meu setor / Atribuídos a mim" (`viewFilter`).
-- Presença: `POST/DELETE /api/whatsapp/viewing/:chatId` (memória, `server/services/presence.js`,
-  TTL 60s). Heartbeat de 25s enquanto a conversa está aberta.
+- **Layout do board** (`userSettings.waKanban` = colunas, tags, setores,
+  `urgencyYellowMin`/`urgencyRedMin`): só o **admin do .env** edita, via
+  `PUT /api/kanban` (modal "Configurar Kanban", engrenagem só p/ ele).
+  `waKanban.cards` é **legado** — não é mais lido.
+- **Conversas** vivem na tabela **`wa_conversations`** (`server/services/conversations.js`).
+  DTO camelCase; tabela snake. Uma coluna fixa **"Não atribuídas"** no board.
+- Rotas `server/routes/inbox.js`: `GET /api/inbox?filter=mine|unassigned|waiting|open|resolved`,
+  `PATCH /api/inbox/:chatId` (campos individuais, **não** clobber),
+  `POST .../claim` (409 `{conflict,current}` se tomada; `{force}`),
+  `.../resolve` · `.../reopen` · `.../transfer`. Toda mutação broadcasta SSE
+  **`conversation_update`** → o board de todos os atendentes atualiza ao vivo.
+- **"Aguardando resposta"** = `last_inbound_at > last_outbound_at`; cor pelos
+  limiares. `touchConversation` (nos handlers `message`/`message_create` de
+  `whatsappService`) atualiza os timestamps e **reabre** conversa `resolved` se o
+  cliente escreve.
+- Migração `migrateConversations(db)` no boot: backfill do `waKanban.cards` antigo.
+- Frontend: fonte da verdade = `GET /api/inbox` mesclado com `waChats` (unread)
+  + SSE. Helpers puros em `components/dashboard/conversations.ts`.
+- Presença: `POST/DELETE /api/whatsapp/viewing/:chatId` (memória, `presence.js`,
+  TTL 60s). Heartbeat 25s com a conversa aberta; avatares no card vêm do
+  `viewers` da resposta do `/api/inbox`.
 - **Prefixo `*Nome:*`**: `POST /api/whatsapp/send-chat` prefixa texto/legenda com
   `*${req.agent.name}:* `. **Só ali** — cron e tools de IA mandam via
   `safeSendMessage` direto e não levam prefixo.
@@ -116,11 +130,11 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
   `getChats()` tem fallback via banco quando o Store injetado quebra.
 - Login do WhatsApp / QR / sessão em `DATA_DIR/whatsapp_auth_<tenant>` — persistir volume.
 - O SSE `/api/whatsapp/events` depende do `?token=` (EventSource não manda header).
-- `updateKanbanState` faz `POST /api/settings` — como o board é global, quem
-  arrasta card / edita coluna precisa ser `isEnvAdmin`? **Não** — hoje o board é
-  gravado via `POST /api/settings` e só o `isEnvAdmin` persiste o global. Se
-  colaboradores precisam mover cards, isso vira uma rota própria de kanban
-  (`server/routes/kanban.js`, ainda não existe). [PENDÊNCIA CONHECIDA]
+- Mover card / atribuir setor-responsável / resolver → `PATCH /api/inbox/:chatId`
+  (tabela `wa_conversations`, atômico, exige `kanban.edit`). **Nunca** grave isso
+  no `waKanban` (blob) — perde alteração entre atendentes.
+- `PUT /api/kanban` só configura o layout (colunas/tags/setores/limiares) e é do
+  **admin do .env**.
 
 ## Comandos
 

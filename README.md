@@ -72,15 +72,24 @@ api/pendencies.js            rotas SERPRO / SITFIS (router separado, montado ant
   e o layout do Kanban. Cada colaborador só edita as **próprias assinaturas**
   (e-mail + WhatsApp), guardadas em `agent_settings`.
 
-## Kanban de atendimento (WhatsApp)
+## Kanban de atendimento (WhatsApp) — multi-atendente
 
-- Board compartilhado (colunas / tags / setores em `user_settings.waKanban`, editável
-  pelo admin no botão de engrenagem do Dashboard).
-- Cada conversa (card) pode ter **setor** e **colaborador responsável**; badges no card
-  e no topo da conversa; filtro "Ver: Todos / Meu setor / Atribuídos a mim".
-- **Presença**: enquanto a conversa está aberta, o front bate heartbeat
-  (`POST /api/whatsapp/viewing/:chatId`, TTL 60s) e mostra "Fulano está vendo esta
-  conversa agora" quando há outro colaborador olhando.
+- **Board compartilhado**: colunas / tags / setores + limiares de urgência em
+  `user_settings.waKanban`, só o admin do `.env` edita (botão de engrenagem).
+- **Conversas** (`wa_conversations`): cada conversa tem coluna, **setor**,
+  **responsável**, **status** (aberta / pendente / resolvida), tags e nota interna.
+  Uma coluna fixa **"Não atribuídas"** com botão **"Atender"** de 1 clique
+  (avisa se outro atendente já assumiu).
+- **Aguardando resposta**: quando a última mensagem é do cliente, o card mostra
+  há quanto tempo, colorido pelos limiares (padrão amarelo 15min / vermelho 30min).
+- **Resolver** arquiva da fila; a conversa **reabre sozinha** se o cliente escrever.
+  **Transferir** move pra outro setor/colaborador com uma nota interna.
+- Filtros: Todas · Minhas · Não atribuídas · Aguardando · por setor · Resolvidas.
+- **Ao vivo**: qualquer mudança (assumir, mover, resolver, transferir) propaga por
+  SSE — o board de todos os atendentes atualiza na hora.
+- **Presença**: com a conversa aberta, o front bate heartbeat
+  (`POST /api/whatsapp/viewing/:chatId`, TTL 60s); avatares no card mostram quem
+  mais está olhando.
 - **Envio manual** de mensagem por um colaborador logado é prefixado com
   `*Nome do Colaborador:*` (negrito nativo). Não vale para cron nem tools de IA.
 
