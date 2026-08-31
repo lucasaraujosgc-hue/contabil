@@ -117,6 +117,14 @@ export const api = {
     const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}`, { method: 'DELETE', headers: getAuthHeader() });
     return handleResponse(res);
   },
+  // observações + histórico de atendimento de uma conversa
+  getConversationEvents: async (chatId: string): Promise<{
+    note: string;
+    events: { id: number; kind: string; detail: string | null; agentId: number | null; agentName: string | null; createdAt: string }[];
+  }> => {
+    const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}/events`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
 
   // --- Admin (só o admin do .env) ---
   importLegacy: async (payload: { file?: string; dry?: boolean } = {}): Promise<{ success: boolean; dry: boolean; file: string; stats: Record<string, number> }> => {
@@ -153,11 +161,11 @@ export const api = {
     const res = await fetch(`${API_URL}/agents`, { headers: getAuthHeader() });
     return handleResponse(res);
   },
-  createAgent: async (payload: { name: string; email: string; department?: string; role?: string; permissions: any }): Promise<any> => {
+  createAgent: async (payload: { name: string; email: string; department?: string; role?: string; permissions: any; emailAlias?: string; emailFromName?: string }): Promise<any> => {
     const res = await fetch(`${API_URL}/agents`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
     return handleResponse(res);
   },
-  updateAgent: async (id: number, payload: { name?: string; email?: string; department?: string; role?: string; permissions?: any }): Promise<any> => {
+  updateAgent: async (id: number, payload: { name?: string; email?: string; department?: string; role?: string; permissions?: any; emailAlias?: string; emailFromName?: string }): Promise<any> => {
     const res = await fetch(`${API_URL}/agents/${id}`, { method: 'PUT', headers: getHeaders(), body: JSON.stringify(payload) });
     return handleResponse(res);
   },

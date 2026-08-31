@@ -3,12 +3,25 @@ import {
   Building2, CheckCircle2, CheckCheck, Clock, AlertCircle, Loader2, Bot, Power, User, Trash2,
   Plus, MoreHorizontal, MessageCircle, Settings, X, Search, Phone, Send, Mic,
   Paperclip, Music, FileText, Image as ImageIcon, RefreshCw, History, Download, Calendar,
-  Eye, Users as UsersIcon
+  Eye, Users as UsersIcon, ClipboardList
 } from 'lucide-react';
 import { UserSettings, WaKanbanState, WaKanbanColumn, WaKanbanTag, WaKanbanCard, Conversation } from '../types';
 import { api, auth } from '../services/api';
 import { waitingMinutes, waitingLabel, urgency, URGENCY_CLS, applyUpdate, shortStamp } from './dashboard/conversations';
 import ReactMarkdown from 'react-markdown';
+
+// Formata um telefone brasileiro (só dígitos) como +55 (75) 99999-9999.
+const formatPhoneBR = (raw?: string | null): string => {
+  const digits = (raw || '').replace(/\D/g, '');
+  if (digits.length < 10) return raw ? `+${digits}` : '';
+  const d = digits.startsWith('55') ? digits : `55${digits}`;
+  const ddi = d.slice(0, 2);
+  const ddd = d.slice(2, 4);
+  const rest = d.slice(4);
+  return rest.length === 9
+    ? `+${ddi} (${ddd}) ${rest.slice(0, 5)}-${rest.slice(5)}`
+    : `+${ddi} (${ddd}) ${rest.slice(0, 4)}-${rest.slice(4)}`;
+};
 
 // Helper: resolve display label for a chatId
 // If chatId starts with 55<digits>@c.us → show formatted phone number
@@ -18,16 +31,9 @@ const getContactDisplayLabel = (chatId: string, name: string): string => {
   const phoneMatch = chatId.match(/^(55\d{10,11})@c\.us$/);
   if (phoneMatch) {
     const digits = phoneMatch[1]; // e.g. 5575999999999
-    // Format: +55 (75) 99999-9999
-    const ddi = digits.slice(0, 2);   // 55
-    const ddd = digits.slice(2, 4);   // 75
-    const rest = digits.slice(4);
-    const formatted = rest.length === 9
-      ? `+${ddi} (${ddd}) ${rest.slice(0,5)}-${rest.slice(5)}`
-      : `+${ddi} (${ddd}) ${rest.slice(0,4)}-${rest.slice(4)}`;
     // If name is the same as raw digits or looks like a LID, prefer formatted phone
     if (!name || name === digits || name.includes('@') || /^\d+$/.test(name)) {
-      return formatted;
+      return formatPhoneBR(digits);
     }
     return name; // has a real name, use it
   }
@@ -71,6 +77,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const [transferChatId, setTransferChatId] = useState<string | null>(null);
   const [claimConflict, setClaimConflict] = useState<{ chatId: string; name: string } | null>(null);
   const [deleteChatId, setDeleteChatId] = useState<string | null>(null);
+  const [infoChatId, setInfoChatId] = useState<string | null>(null);
   const [chatDetailsMap, setChatDetailsMap] = useState<Record<string, { profilePicUrl?: string | null, lastMessage?: string, lastMessageFromMe?: boolean, name?: string, number?: string | null }>>({});
   const [expandedMediaUrl, setExpandedMediaUrl] = useState<string | null>(null);
   const [expandedMediaType, setExpandedMediaType] = useState<'image' | 'video' | 'document' | null>(null);
@@ -1213,6 +1220,16 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           </div>
       )}
 
+      {infoChatId && (
+          <ConversationInfoModal
+              chatId={infoChatId}
+              conv={conversations[infoChatId]}
+              departments={departments}
+              onClose={() => setInfoChatId(null)}
+              onNoteSaved={(c) => mergeConversation(c)}
+          />
+      )}
+
       {deleteChatId && (
           <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
@@ -1385,7 +1402,13 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                           </div>
                           <div>
                               <h3 className="font-bold text-gray-800">{chatDetailsMap[activeChat.id._serialized || activeChat.id]?.name || activeChat.name}</h3>
-                              <p className="text-xs text-gray-500">{chatDetailsMap[activeChat.id._serialized || activeChat.id]?.number ? `+${chatDetailsMap[activeChat.id._serialized || activeChat.id].number}` : (activeChat.id._serialized || activeChat.id)}</p>
+                              {(() => {
+                                  const acid = activeChat.id._serialized || activeChat.id;
+                                  const num = chatDetailsMap[acid]?.number;
+                                  const phoneFromId = acid.match(/^(\d{10,13})@c\.us$/)?.[1];
+                                  const display = num ? formatPhoneBR(num) : (phoneFromId ? formatPhoneBR(phoneFromId) : acid);
+                                  return <p className="text-xs text-gray-500">{display}</p>;
+                              })()}
                           </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1398,6 +1421,10 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                    {ac?.status === 'resolved'
                                      ? <button onClick={() => doStatus(acid, 'reopen')} className="text-xs px-2.5 py-1.5 rounded-md bg-blue-50 text-blue-700 font-semibold border border-blue-200">Reabrir</button>
                                      : <button onClick={() => doStatus(acid, 'resolve')} className="text-xs px-2.5 py-1.5 rounded-md bg-green-50 text-green-700 font-semibold border border-green-200">Resolver</button>}
+                                   <button onClick={() => setInfoChatId(acid)} title="Observações e histórico de atendimento"
+                                     className="text-xs px-2 py-1.5 rounded-md bg-white border text-gray-600 hover:text-gray-800 flex items-center gap-1">
+                                     <ClipboardList className="w-3.5 h-3.5" /> Ficha
+                                   </button>
                                    {acAgent
                                      ? <button onClick={() => setTransferChatId(acid)} title={`Responsável: ${acAgent.name}`} className="text-xs px-2 py-1.5 rounded-md bg-white border flex items-center gap-1">
                                          <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] flex items-center justify-center">{initials(acAgent.name)}</span>
@@ -2034,6 +2061,114 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
 };
 
 // ─── Modal de transferência de conversa ─────────────────────────────────────
+// ── Ficha do atendimento: observações (editável) + histórico ────────────────
+const EVENT_META: Record<string, { label: (d: string | null) => string }> = {
+  department:   { label: (d) => `Setor definido: ${d || 'sem setor'}` },
+  assigned:     { label: (d) => `Atribuída a ${d || 'alguém'}` },
+  unassigned:   { label: () => 'Voltou para a fila (sem responsável)' },
+  status:       { label: (d) => d === 'resolved' ? 'Marcada como resolvida' : d === 'pending' ? 'Marcada como pendente' : 'Reaberta' },
+  transfer:     { label: (d) => `Transferida${d ? ` — ${d}` : ''}` },
+  reopen_auto:  { label: (d) => `Reaberta automaticamente${d ? ` — ${d}` : ''}` },
+};
+
+const ConversationInfoModal: React.FC<{
+  chatId: string;
+  conv?: Conversation;
+  departments: { id: string; name: string; color: string }[];
+  onClose: () => void;
+  onNoteSaved: (c: Conversation) => void;
+}> = ({ chatId, conv, departments, onClose, onNoteSaved }) => {
+  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<{ id: number; kind: string; detail: string | null; agentName: string | null; createdAt: string }[]>([]);
+  const [note, setNote] = useState('');
+  const [savedNote, setSavedNote] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await api.getConversationEvents(chatId);
+        if (!alive) return;
+        setEvents(r.events || []);
+        setNote(r.note || '');
+        setSavedNote(r.note || '');
+      } catch (e) { /* silencioso */ }
+      finally { if (alive) setLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, [chatId]);
+
+  const deptName = (id: string | null) => (id ? departments.find(d => d.id === id)?.name || id : id);
+  const saveNote = async () => {
+    setSaving(true);
+    try {
+      const r = await api.patchConversation(chatId, { note });
+      setSavedNote(note);
+      if (r.conversation) onNoteSaved(r.conversation);
+    } catch (e) { /* noop */ }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div>
+            <h3 className="font-bold text-gray-800">Ficha do atendimento</h3>
+            <p className="text-xs text-gray-500">{conv?.name || chatId.split('@')[0]}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-5 overflow-y-auto space-y-5">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase mb-1.5">Observações</label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={4}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Anotações internas sobre esse cliente / atendimento…" />
+            <div className="flex justify-end mt-2">
+              <button onClick={saveNote} disabled={saving || note === savedNote}
+                className="text-xs px-3 py-1.5 rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+                {saving ? 'Salvando…' : note === savedNote ? 'Salvo' : 'Salvar observações'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase mb-2">Histórico de atendimento</label>
+            {loading ? (
+              <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+            ) : events.length === 0 ? (
+              <p className="text-sm text-gray-400 py-4 text-center">Sem movimentações registradas ainda.</p>
+            ) : (
+              <ol className="space-y-2.5">
+                {events.map(ev => {
+                  const meta = EVENT_META[ev.kind];
+                  const detail = ev.kind === 'department' ? deptName(ev.detail) : ev.detail;
+                  const text = meta ? meta.label(detail) : `${ev.kind}${detail ? `: ${detail}` : ''}`;
+                  return (
+                    <li key={ev.id} className="flex gap-2.5 text-sm">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-1.5 shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-gray-700">{text}</p>
+                        <p className="text-[11px] text-gray-400">
+                          {new Date(ev.createdAt).toLocaleString('pt-BR')}
+                          {ev.agentName ? ` · ${ev.agentName}` : ''}
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const TransferModal: React.FC<{
   chatId: string;
   current?: Conversation;

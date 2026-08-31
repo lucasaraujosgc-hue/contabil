@@ -15,6 +15,7 @@ type Agent = {
   id: number; name: string; username: string | null; email: string | null;
   department: string | null; role: 'admin' | 'colaborador'; status: string;
   permissions: Record<string, Perm>; inviteExpired?: boolean;
+  emailAlias?: string | null; emailFromName?: string | null;
 };
 
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
@@ -233,6 +234,8 @@ const AgentModal: React.FC<{
   const [name, setName] = useState(agent?.name || '');
   const [email, setEmail] = useState(agent?.email || '');
   const [department, setDepartment] = useState(agent?.department || '');
+  const [emailAlias, setEmailAlias] = useState(agent?.emailAlias || '');
+  const [emailFromName, setEmailFromName] = useState(agent?.emailFromName || '');
   const [perms, setPerms] = useState<Record<string, Perm>>(
     () => normalizePerms(agent?.permissions || defaultPermissions, tabs)
   );
@@ -253,10 +256,10 @@ const AgentModal: React.FC<{
     setSaving(true);
     try {
       if (mode === 'new') {
-        const r = await api.createAgent({ name, email, department, permissions: perms });
+        const r = await api.createAgent({ name, email, department, permissions: perms, emailAlias, emailFromName });
         onSaved(r.emailSent ? `Convite enviado para ${email}` : `Colaborador criado, mas o e-mail falhou: ${r.emailError}`);
       } else {
-        await api.updateAgent(agent!.id, { name, email, department, permissions: perms });
+        await api.updateAgent(agent!.id, { name, email, department, permissions: perms, emailAlias, emailFromName });
         onSaved('Colaborador atualizado.');
       }
     } catch (e: any) { onError(e.message); }
@@ -285,6 +288,30 @@ const AgentModal: React.FC<{
             <label className="block text-sm font-semibold text-gray-700 mb-1">Setor</label>
             <input list="dept-list" value={department} onChange={(e) => setDepartment(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" placeholder="ex: Fiscal" />
             <datalist id="dept-list">{departments.map((d) => <option key={d} value={d} />)}</datalist>
+          </div>
+
+          <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Mail className="w-4 h-4 text-blue-600" />
+              <span className="text-sm font-semibold text-gray-700">Remetente de e-mail (alias)</span>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              Quando este colaborador envia documentos/mensagens, o e-mail sai deste remetente.
+              O login SMTP continua sendo a conta principal do <code>.env</code>; o alias precisa
+              estar liberado nesse mailbox. Em branco = usa o remetente padrão do sistema.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Nome de exibição</label>
+                <input value={emailFromName} onChange={(e) => setEmailFromName(e.target.value)} placeholder="ex: João | Vírgula Contábil"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Endereço do alias</label>
+                <input type="email" value={emailAlias} onChange={(e) => setEmailAlias(e.target.value)} placeholder="ex: joao@escritorio.com.br"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+              </div>
+            </div>
           </div>
 
           <div>
