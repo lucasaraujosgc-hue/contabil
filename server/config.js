@@ -15,7 +15,18 @@ export const PORT = process.env.PORT || 3000;
 export const tenant = () => (process.env.USERS || 'admin').split(',')[0].trim();
 
 // URL base pública, usada nos links de convite de colaborador (/definir-acesso).
-export const APP_BASE_URL = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+// Prioridade: APP_BASE_URL do .env  >  cabeçalhos do request (atrás do proxy)  >  localhost.
+export const APP_BASE_URL = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+
+export function appBaseUrl(req) {
+    if (APP_BASE_URL) return APP_BASE_URL;
+    if (req) {
+        const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+        const host = (req.headers['x-forwarded-host'] || req.headers.host || (req.get && req.get('host')) || '').split(',')[0].trim();
+        if (host) return `${proto}://${host}`;
+    }
+    return `http://localhost:${PORT}`;
+}
 
 // Segredo do JWT. Em produção é obrigatório; em dev cai num valor fixo (com aviso).
 export const IS_PROD = process.env.NODE_ENV === 'production';

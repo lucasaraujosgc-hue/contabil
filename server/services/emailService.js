@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
 import { log } from '../logger.js';
-import { APP_BASE_URL } from '../config.js';
+import { appBaseUrl } from '../config.js';
 
 // --- EMAIL CONFIGURATION --- (extraído do server.js, sem alterações)
 const emailPort = parseInt(process.env.EMAIL_PORT || '465');
@@ -103,9 +103,10 @@ export const saveToImapSentFolder = async (mailOptions) => {
 };
 
 // --- Convite de colaborador ---
-export async function sendInviteEmail(agent, rawToken, { reset = false } = {}) {
+export async function sendInviteEmail(agent, rawToken, { reset = false, req = null } = {}) {
     if (!agent?.email) throw new Error('Colaborador sem e-mail cadastrado.');
-    const link = `${APP_BASE_URL}/definir-acesso?token=${encodeURIComponent(rawToken)}`;
+    const base = appBaseUrl(req);
+    const link = `${base}/definir-acesso?token=${encodeURIComponent(rawToken)}`;
     const title = reset ? 'Redefinição de acesso — Contábil Manager Pro'
                         : 'Convite para o Contábil Manager Pro';
     const acao = reset ? 'redefinir sua senha' : 'criar seu acesso';

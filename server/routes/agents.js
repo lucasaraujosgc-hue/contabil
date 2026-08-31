@@ -29,7 +29,7 @@ router.post('/', async (req, res) => {
     try {
         const { agent, rawToken } = await createInvite(getDb(), req.body || {});
         let emailSent = true, emailError;
-        try { await sendInviteEmail(agent, rawToken); }
+        try { await sendInviteEmail(agent, rawToken, { req }); }
         catch (e) { emailSent = false; emailError = e.message; }
         res.json({ success: true, agent: sanitizeAgent(agent), emailSent, emailError });
     } catch (e) {
@@ -69,7 +69,7 @@ router.post('/:id/reset-password', async (req, res) => {
     try {
         const { agent, rawToken } = await refreshInvite(getDb(), Number(req.params.id), { resetPassword: true });
         let emailSent = true, emailError;
-        try { await sendInviteEmail(agent, rawToken, { reset: true }); }
+        try { await sendInviteEmail(agent, rawToken, { reset: true, req }); }
         catch (e) { emailSent = false; emailError = e.message; }
         res.json({ success: true, agent: sanitizeAgent(await getAgentById(getDb(), agent.id)), emailSent, emailError });
     } catch (e) {
@@ -82,7 +82,7 @@ router.post('/:id/resend-invite', async (req, res) => {
     try {
         const { agent, rawToken } = await refreshInvite(getDb(), Number(req.params.id));
         let emailSent = true, emailError;
-        try { await sendInviteEmail(agent, rawToken); }
+        try { await sendInviteEmail(agent, rawToken, { req }); }
         catch (e) { emailSent = false; emailError = e.message; }
         res.json({ success: true, emailSent, emailError });
     } catch (e) {
