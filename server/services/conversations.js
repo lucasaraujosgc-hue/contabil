@@ -228,8 +228,23 @@ export async function deleteConversation(db, chatId) {
     await db.prepare('DELETE FROM whatsapp_messages WHERE chatId = ?').run(chatId);
     await db.prepare('DELETE FROM whatsapp_sync WHERE chatId = ?').run(chatId);
     await db.prepare('DELETE FROM whatsapp_contacts WHERE contact_id = ?').run(chatId);
+    await db.prepare('DELETE FROM wa_conversation_events WHERE chat_id = ?').run(chatId);
     await db.prepare('DELETE FROM wa_conversations WHERE chat_id = ?').run(chatId);
     return { deleted: true, messages: Number(msgs?.n || 0) };
+}
+
+// apaga várias conversas de uma vez (modo seleção do Kanban).
+export async function bulkDeleteConversations(db, chatIds = []) {
+    const ids = [...new Set((chatIds || []).filter(Boolean))];
+    let messages = 0;
+    const deleted = [];
+    for (const id of ids) {
+        try {
+            const r = await deleteConversation(db, id);
+            if (r.deleted) { deleted.push(id); messages += r.messages || 0; }
+        } catch (e) { log(`[conv] bulk delete ${id}: ${e.message}`); }
+    }
+    return { deleted, count: deleted.length, messages };
 }
 
 export async function transferConversation(db, chatId, agent, { toAgentId, toDepartment, note } = {}) {

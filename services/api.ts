@@ -117,6 +117,10 @@ export const api = {
     const res = await fetch(`${API_URL}/inbox/${encodeURIComponent(chatId)}`, { method: 'DELETE', headers: getAuthHeader() });
     return handleResponse(res);
   },
+  bulkDeleteConversations: async (chatIds: string[]): Promise<{ success: boolean; deleted: string[]; count: number; messages: number }> => {
+    const res = await fetch(`${API_URL}/inbox/bulk-delete`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ chatIds }) });
+    return handleResponse(res);
+  },
   // observações + histórico de atendimento de uma conversa
   getConversationEvents: async (chatId: string): Promise<{
     note: string;

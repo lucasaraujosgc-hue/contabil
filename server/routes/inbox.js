@@ -6,7 +6,7 @@ import { broadcastWaEvent } from '../state/waState.js';
 import {
     listConversations, getConversation, patchConversation,
     claimConversation, transferConversation, deleteConversation,
-    getConversationEvents,
+    bulkDeleteConversations, getConversationEvents,
 } from '../services/conversations.js';
 
 const router = express.Router();
@@ -27,6 +27,21 @@ router.get('/inbox', requirePermission('kanban', 'view'), async (req, res) => {
         res.json(list);
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/inbox/bulk-delete  { chatIds: [...] }  — apaga várias conversas (modo seleção)
+router.post('/inbox/bulk-delete', requirePermission('kanban', 'edit'), async (req, res) => {
+    try {
+        const chatIds = Array.isArray(req.body?.chatIds) ? req.body.chatIds : [];
+        if (!chatIds.length) return res.status(400).json({ error: 'Nenhuma conversa selecionada.' });
+        const r = await bulkDeleteConversations(getDb(), chatIds);
+        for (const id of r.deleted) {
+            broadcastWaEvent(tenant(), 'conversation_deleted', { chatId: id, updatedBy: req.agent?.id || null });
+        }
+        res.json({ success: true, ...r });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
     }
 });
 

@@ -78,6 +78,11 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
   const [claimConflict, setClaimConflict] = useState<{ chatId: string; name: string } | null>(null);
   const [deleteChatId, setDeleteChatId] = useState<string | null>(null);
   const [infoChatId, setInfoChatId] = useState<string | null>(null);
+  // modo seleção p/ apagar várias conversas de uma vez
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set());
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [chatDetailsMap, setChatDetailsMap] = useState<Record<string, { profilePicUrl?: string | null, lastMessage?: string, lastMessageFromMe?: boolean, name?: string, number?: string | null }>>({});
   const [expandedMediaUrl, setExpandedMediaUrl] = useState<string | null>(null);
   const [expandedMediaType, setExpandedMediaType] = useState<'image' | 'video' | 'document' | null>(null);
@@ -148,6 +153,25 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
       if (activeChat && (activeChat.id._serialized || activeChat.id) === chatId) setActiveChat(null);
     } catch (e) {}
     setDeleteChatId(null);
+  };
+
+  const toggleSelect = (chatId: string) => setSelectedChats(prev => {
+    const n = new Set(prev);
+    n.has(chatId) ? n.delete(chatId) : n.add(chatId);
+    return n;
+  });
+  const exitSelectMode = () => { setSelectMode(false); setSelectedChats(new Set()); setBulkDeleteConfirm(false); };
+  const doBulkDelete = async () => {
+    const ids = [...selectedChats];
+    if (!ids.length) return;
+    setBulkDeleting(true);
+    try {
+      await api.bulkDeleteConversations(ids);
+      setConversations(prev => { const n = { ...prev }; for (const id of ids) delete n[id]; return n; });
+      if (activeChat && ids.includes(activeChat.id._serialized || activeChat.id)) setActiveChat(null);
+    } catch (e) {}
+    setBulkDeleting(false);
+    exitSelectMode();
   };
 
   useEffect(() => {
@@ -998,7 +1022,16 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                 <Settings className="w-5 h-5" />
              </button>
            )}
-           <button 
+           {me?.isEnvAdmin && (
+             <button
+               onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+               className={`p-1.5 border rounded-lg transition-colors ${selectMode ? 'border-red-400 bg-red-100 text-red-700' : 'border-red-200 text-red-500 hover:bg-red-50'}`}
+               title={selectMode ? 'Sair do modo seleção' : 'Selecionar conversas para apagar'}
+             >
+                <Trash2 className="w-5 h-5" />
+             </button>
+           )}
+           <button
              onClick={handleSyncAllKanbanContacts}
              className="p-1.5 border border-amber-200 text-amber-600 rounded-lg hover:bg-amber-50 transition-colors"
              title="Atualizar histórico de todos os contatos do Kanban"
@@ -1032,6 +1065,18 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
            </button>
       </div>
 
+      {selectMode && (
+        <div className="flex items-center gap-3 px-3 py-2 bg-red-50 border-y border-red-200">
+          <span className="text-sm font-semibold text-red-700">{selectedChats.size} conversa(s) selecionada(s)</span>
+          <button onClick={() => setBulkDeleteConfirm(true)} disabled={selectedChats.size === 0}
+            className="text-xs px-3 py-1.5 rounded-md bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-40 flex items-center gap-1">
+            <Trash2 className="w-3.5 h-3.5" /> Apagar selecionadas
+          </button>
+          <button onClick={exitSelectMode} className="text-xs px-3 py-1.5 rounded-md bg-white border border-gray-300 text-gray-600 hover:bg-gray-50">Cancelar</button>
+          <span className="text-xs text-red-500 hidden sm:inline">Clique nas conversas para marcar</span>
+        </div>
+      )}
+
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto flex gap-3 p-3">
           {boardColumns.map(col => {
@@ -1060,13 +1105,17 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                               return (
                               <div
                                   key={card.chatId}
-                                  draggable={!isQueue}
+                                  draggable={!isQueue && !selectMode}
                                   onDragStart={(e) => { e.dataTransfer.setData("chatId", card.chatId); e.dataTransfer.effectAllowed = "move"; }}
-                                  onClick={() => openChat({ id: card.chatId, name: card.displayName })}
-                                  className={`bg-white p-2.5 rounded-lg shadow-sm border cursor-pointer hover:shadow-md hover:border-blue-300 transition-all border-l-4 group ${card.status === 'resolved' ? 'opacity-60' : ''} ${card.unreadCount > 0 ? 'border-green-300' : 'border-gray-100'}`}
+                                  onClick={() => selectMode ? toggleSelect(card.chatId) : openChat({ id: card.chatId, name: card.displayName })}
+                                  className={`bg-white p-2.5 rounded-lg shadow-sm border cursor-pointer hover:shadow-md transition-all border-l-4 group ${card.status === 'resolved' ? 'opacity-60' : ''} ${selectMode && selectedChats.has(card.chatId) ? 'ring-2 ring-red-500 border-red-400' : card.unreadCount > 0 ? 'border-green-300 hover:border-blue-300' : 'border-gray-100 hover:border-blue-300'}`}
                                   style={{ borderLeftColor: dept?.color || col.color }}
                               >
                                   <div className="flex items-center gap-2 mb-1">
+                                      {selectMode && (
+                                          <input type="checkbox" readOnly checked={selectedChats.has(card.chatId)}
+                                              className="w-4 h-4 rounded text-red-600 focus:ring-red-500 flex-shrink-0 pointer-events-none" />
+                                      )}
                                       <div className="w-7 h-7 rounded-full bg-gray-100 flex-shrink-0 overflow-hidden border border-gray-200">
                                           {card.profilePicUrl ? <img src={card.profilePicUrl} alt={card.displayName} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <User className="w-full h-full p-1.5 text-gray-400" />}
                                       </div>
@@ -1115,7 +1164,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                                       </div>
                                   )}
 
-                                  <div className="flex items-center justify-between">
+                                  <div className={`flex items-center justify-between ${selectMode ? 'pointer-events-none opacity-40' : ''}`}>
                                       {/* responsável / atender */}
                                       {agent ? (
                                           <span className="text-[9px] px-1 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold flex items-center gap-1" title={`Responsável: ${agent.name}`}>
@@ -1245,6 +1294,29 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                   <div className="flex justify-end gap-2 mt-5">
                       <button onClick={() => setDeleteChatId(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
                       <button onClick={() => doDelete(deleteChatId)} className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700">Apagar</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {bulkDeleteConfirm && (
+          <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+                  <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0"><Trash2 className="w-5 h-5 text-red-600" /></div>
+                      <div>
+                          <h3 className="font-bold text-gray-800">Apagar {selectedChats.size} conversa(s)</h3>
+                          <p className="text-sm text-gray-600 mt-1">
+                              Remove as conversas selecionadas do quadro e apaga <strong>todo o histórico de mensagens</strong> guardado. Não tem como desfazer (cada uma volta do zero se o cliente escrever de novo).
+                          </p>
+                      </div>
+                  </div>
+                  <div className="flex justify-end gap-2 mt-5">
+                      <button onClick={() => setBulkDeleteConfirm(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
+                      <button onClick={doBulkDelete} disabled={bulkDeleting}
+                          className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:opacity-60 flex items-center gap-2">
+                          {bulkDeleting && <Loader2 className="w-4 h-4 animate-spin" />} Apagar {selectedChats.size}
+                      </button>
                   </div>
               </div>
           </div>
