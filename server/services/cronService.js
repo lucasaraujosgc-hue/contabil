@@ -230,5 +230,15 @@ async function tick() {
 }
 
 export function startCron() {
-    setInterval(() => { tick().catch((e) => log('[CRON] erro no tick', e)); }, 60000);
+    // Um tick com muitos destinatários e anexos pode passar de 60s. O
+    // reagendamento já acontece antes do envio, então não haveria reenvio, mas
+    // dois ticks concorrentes disputariam a mesma sessão de WhatsApp.
+    let rodando = false;
+    setInterval(() => {
+        if (rodando) return;
+        rodando = true;
+        tick()
+            .catch((e) => log('[CRON] erro no tick', e))
+            .finally(() => { rodando = false; });
+    }, 60000);
 }

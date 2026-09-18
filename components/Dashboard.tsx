@@ -248,7 +248,7 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
           if (res.success) {
               setNewSubtaskTitle('');
               setAddingSubtaskTo(null);
-              await fetchDashTasks();
+              await loadDashTasks();
           }
       } catch (err) {
           console.error(err);
