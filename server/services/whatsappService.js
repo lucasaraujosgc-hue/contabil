@@ -11,6 +11,20 @@ import { touchConversation } from './conversations.js';
 
 export { MessageMedia };
 
+// Teto de renovações de QR Code antes de encerrar o navegador.
+//
+// Sem leitor do outro lado, o WhatsApp Web renova o QR a cada ~20s
+// INDEFINIDAMENTE, e cada renovação é um pedido de vinculação de dispositivo ao
+// servidor do WhatsApp. Medido no log deste sistema: ~4.900 por dia, por dias
+// seguidos, sempre que a sessão caía e ninguém reconectava.
+//
+// Quem conta é a própria whatsapp-web.js (Client.js:206-214): ao estourar, ela
+// emite DISCONNECTED('Max qrcode retries reached') e chama await this.destroy(),
+// awaitado e sequenciado por dentro da lib.
+//
+// 15 dá ~5 minutos de QR na tela, folgado para escanear, e corta o descontrole.
+const MAX_QR = Math.max(1, Number(process.env.WA_MAX_QR) || 15);
+
 // --- HELPER: Puppeteer Lock Cleaner ---
 const cleanPuppeteerLocks = (dir) => {
     const locks = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
@@ -170,6 +184,7 @@ export const getWaClientWrapper = (username) => {
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: username, dataPath: authPath }), 
             webVersionCache,
+            qrMaxRetries: MAX_QR,
             puppeteer: {
                 headless: true,
                 executablePath: puppeteerExecutablePath,
@@ -428,14 +443,11 @@ export const getWaClientWrapper = (username) => {
                         let resolvedId = chatId;
                         let phone = isLid ? null : chatId.replace('@c.us', '').replace(/\D/g, '');
 
-                        if (!isLid && phone) {
-                            try {
-                                const numberId = await client.getNumberId(phone);
-                                if (numberId && numberId._serialized) {
-                                    resolvedId = numberId._serialized;
-                                }
-                            } catch (_) {}
-                        }
+                        // Sem getNumberId aqui: a condição só alcançava chats
+                        // @c.us, cujo id JÁ é o wid canônico — a resposta já estava
+                        // em mãos. Eram centenas de consultas de existência de
+                        // número em rajada logo após cada login, sem benefício.
+                        // O upsert abaixo, que é a parte útil, continua igual.
 
                         const contactName = chat.name || chat.id.user || resolvedId;
                         upsertContactCache(db, resolvedId, contactName, phone);
@@ -459,8 +471,19 @@ export const getWaClientWrapper = (username) => {
         
         client.on('disconnected', (reason) => { 
             log(`[WhatsApp Event] Desconectado (${username}). Razão: ${reason}`);
-            waClients[username].status = 'disconnected';
-            waClients[username].info = null;
+            const w = waClients[username];
+            if (!w) return;
+
+            w.status = 'disconnected';
+            w.info = null;
+            w.qr = null;
+
+            // A lib destrói o cliente sozinha em todos os casos MENOS o LOGOUT
+            // (Client.js:213 e :910). Refletir isso aqui evita que o wrapper
+            // aponte para um navegador que já morreu. No LOGOUT o mesmo cliente
+            // segue para a tela de QR, onde o qrMaxRetries o encerra.
+            // Para religar depois disso, use "Resetar Conexão" na tela do WhatsApp.
+            if (reason !== 'LOGOUT') w.client = null;
         });
 
         client.initialize().catch((err) => {
