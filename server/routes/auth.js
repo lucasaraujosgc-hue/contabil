@@ -29,7 +29,21 @@ router.post('/login', loginLimiter, async (req, res) => {
         const ok = agent && agent.status === 'active' && await verifyPassword(password, agent.password_hash);
         if (!ok) return res.status(401).json({ error: 'Credenciais inválidas' });
 
-        getWaClientWrapper(process.env.USERS ? process.env.USERS.split(',')[0].trim() : user); // aquece a sessão de WhatsApp
+        // "Aquecimento" da sessão de WhatsApp: sobe o navegador já no login para a
+        // aba do WhatsApp abrir pronta depois.
+        //
+        // O efeito colateral é que o navegador liga em TODO login, mesmo quando a
+        // pessoa entrou só para mexer em documentos, empresas ou tarefas — nenhuma
+        // dessas telas usa WhatsApp. Com a sessão caída, ele ia parar na tela de QR
+        // e ficava lá pedindo vinculação.
+        //
+        // WA_AUTOSTART=false desliga o aquecimento. O WhatsApp passa a subir só
+        // quando alguém abre uma tela dele (as rotas /api/whatsapp/* continuam
+        // inicializando sob demanda, como sempre fizeram), e a sessão gravada é
+        // preservada — reconectar não pede QR novo.
+        if (String(process.env.WA_AUTOSTART ?? 'true').toLowerCase() !== 'false') {
+            getWaClientWrapper(process.env.USERS ? process.env.USERS.split(',')[0].trim() : user);
+        }
         res.json({ success: true, token: signToken(agent), agent: sanitizeAgent(agent) });
     } catch (e) {
         res.status(500).json({ error: 'Erro no login' });
