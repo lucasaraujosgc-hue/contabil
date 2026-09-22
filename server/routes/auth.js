@@ -1,7 +1,7 @@
 import express from 'express';
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { getDb } from '../db/index.js';
-import { getWaClientWrapper } from '../services/whatsappService.js';
+import { startWaClient } from '../services/whatsappService.js';
 import { authenticateToken, signToken } from '../middleware/auth.js';
 import {
     getAgentByUsername, verifyPassword, sanitizeAgent,
@@ -41,8 +41,11 @@ router.post('/login', loginLimiter, async (req, res) => {
         // quando alguém abre uma tela dele (as rotas /api/whatsapp/* continuam
         // inicializando sob demanda, como sempre fizeram), e a sessão gravada é
         // preservada — reconectar não pede QR novo.
-        if (String(process.env.WA_AUTOSTART ?? 'true').toLowerCase() !== 'false') {
-            getWaClientWrapper(process.env.USERS ? process.env.USERS.split(',')[0].trim() : user);
+        // Agora que a tela tem os botões "Conectar" e "Parar", o navegador NÃO sobe
+        // sozinho no login — senão o botão de parar seria desfeito no login
+        // seguinte. WA_AUTOSTART=true restaura o aquecimento automático de antes.
+        if (String(process.env.WA_AUTOSTART ?? 'false').toLowerCase() === 'true') {
+            startWaClient(process.env.USERS ? process.env.USERS.split(',')[0].trim() : user);
         }
         res.json({ success: true, token: signToken(agent), agent: sanitizeAgent(agent) });
     } catch (e) {

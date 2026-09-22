@@ -7,10 +7,14 @@ const WhatsAppConnect: React.FC = () => {
   const [qrCodeBase64, setQrCodeBase64] = useState<string | null>(null);
   const [sessionInfo, setSessionInfo] = useState<any>(null);
   const [isResetting, setIsResetting] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const fetchStatus = async () => {
       try {
           const data = await api.getWhatsAppStatus();
+          setRunning(!!data.running);
+          if (data.qr || data.status === 'connected' || !data.running) setBusy(false);
           if (data.status === 'connected') {
               setStatus('connected');
               setSessionInfo(data.info || { name: 'Sessão Ativa', device: 'WhatsApp Web' });
@@ -32,6 +36,32 @@ const WhatsAppConnect: React.FC = () => {
       const interval = setInterval(fetchStatus, 3000); // Poll every 3s
       return () => clearInterval(interval);
   }, []);
+
+  // Liga o navegador e começa a gerar o QR.
+  const handleConnect = async () => {
+      setBusy(true);
+      try {
+          await api.connectWhatsApp();
+      } catch (e: any) {
+          setBusy(false);
+          alert('Não foi possível iniciar: ' + e.message);
+      }
+  };
+
+  // Para a geração de QR e desliga o navegador, SEM desvincular o aparelho.
+  const handleStop = async () => {
+      setBusy(true);
+      try {
+          await api.stopWhatsApp();
+          setStatus('disconnected');
+          setQrCodeBase64(null);
+          setSessionInfo(null);
+      } catch (e: any) {
+          alert('Não foi possível parar: ' + e.message);
+      } finally {
+          setBusy(false);
+      }
+  };
 
   const handleDisconnect = async () => {
       if(confirm('Tem certeza que deseja desconectar o WhatsApp?')) {
@@ -64,7 +94,7 @@ const WhatsAppConnect: React.FC = () => {
             <MessageCircle className="w-8 h-8 text-green-600" /> WhatsApp Web
         </h1>
         <p className="text-gray-500 max-w-md mx-auto">
-            O status é atualizado automaticamente. Escaneie o QR Code abaixo.
+            A sessão só é iniciada quando você clica em Gerar QR Code.
         </p>
       </div>
 
@@ -75,15 +105,38 @@ const WhatsAppConnect: React.FC = () => {
                   <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto text-gray-400">
                       <Smartphone className="w-10 h-10" />
                   </div>
-                  <div>
-                      <h3 className="text-lg font-bold text-gray-800">Aguardando Servidor...</h3>
-                      <p className="text-sm text-gray-500 mt-2">
-                          Se o QR Code não aparecer em instantes, verifique o console do servidor.
-                      </p>
-                  </div>
-                  <div className="flex justify-center">
-                      <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
-                  </div>
+                  {busy || running ? (
+                      <>
+                          <div>
+                              <h3 className="text-lg font-bold text-gray-800">Iniciando sessão...</h3>
+                              <p className="text-sm text-gray-500 mt-2">
+                                  Abrindo o navegador no servidor. O QR Code aparece em alguns segundos.
+                              </p>
+                          </div>
+                          <div className="flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
+                          <button
+                            onClick={handleStop}
+                            className="text-gray-600 hover:text-gray-900 text-sm font-medium flex items-center justify-center gap-2 mx-auto py-2 px-4 hover:bg-gray-100 rounded-lg transition-colors"
+                          >
+                              <Power className="w-4 h-4" /> Parar
+                          </button>
+                      </>
+                  ) : (
+                      <>
+                          <div>
+                              <h3 className="text-lg font-bold text-gray-800">Desconectado</h3>
+                              <p className="text-sm text-gray-500 mt-2">
+                                  O navegador está desligado e nenhum QR Code está sendo gerado.
+                              </p>
+                          </div>
+                          <button
+                            onClick={handleConnect}
+                            className="bg-green-600 hover:bg-green-700 text-white font-bold px-6 py-3 rounded-lg flex items-center justify-center gap-2 mx-auto transition-colors"
+                          >
+                              <QrCode className="w-5 h-5" /> Gerar QR Code
+                          </button>
+                      </>
+                  )}
               </div>
           )}
 
@@ -103,6 +156,17 @@ const WhatsAppConnect: React.FC = () => {
                           <li>Aponte a câmera para a tela.</li>
                       </ol>
                   </div>
+
+                  <button
+                    onClick={handleStop}
+                    disabled={busy}
+                    className="text-red-600 hover:text-red-800 text-sm font-medium flex items-center justify-center gap-2 w-full py-2 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                      <Power className="w-4 h-4" /> Parar geração do QR Code
+                  </button>
+                  <p className="text-xs text-gray-400 -mt-3">
+                      Encerra o navegador sem desvincular o aparelho.
+                  </p>
               </div>
           )}
 
@@ -134,6 +198,14 @@ const WhatsAppConnect: React.FC = () => {
                            </p>
                       </div>
                   </div>
+
+                  <button
+                    onClick={handleStop}
+                    disabled={busy}
+                    className="text-gray-700 hover:text-gray-900 text-sm font-medium flex items-center justify-center gap-2 w-full py-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                      <Power className="w-4 h-4" /> Desligar (mantém o aparelho vinculado)
+                  </button>
 
                   <button 
                     onClick={handleDisconnect}

@@ -7,7 +7,7 @@ import { getDb } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { waClients } from '../state/waState.js';
-import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
+import { getWaClientWrapper, startWaClient, stopWaClient, upsertContactCache, saveMessagesToDb, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
 import { ai, processAI } from '../services/aiService.js';
 import { markViewing, stopViewing } from '../services/presence.js';
 import { waSenderConfig } from '../services/agents.js';
@@ -22,22 +22,53 @@ router.delete('/whatsapp/viewing/:chatId', (req, res) => {
     res.json({ success: true });
 });
 
-router.get('/whatsapp/status', (req, res) => { 
+router.get('/whatsapp/status', (req, res) => {
+    // Leitura pura: não liga nada. Antes esta rota inicializava o cliente, e como
+    // a tela consulta de 3 em 3 segundos, bastava deixar a aba aberta para manter
+    // um navegador de pé gerando QR.
     const wrapper = getWaClientWrapper(req.user);
-    res.json({ 
-        status: wrapper.status, 
-        qr: wrapper.qr, 
-        info: wrapper.info 
-    }); 
+    res.json({
+        status: wrapper.status,
+        qr: wrapper.qr,
+        info: wrapper.info,
+        running: !!wrapper.client,
+    });
+});
+
+// Botão "Gerar QR Code / Conectar" — único caminho que liga o navegador.
+router.post('/whatsapp/connect', (req, res) => {
+    try {
+        const wrapper = startWaClient(req.user);
+        if (!wrapper) return res.status(400).json({ error: 'Usuário inválido' });
+        res.json({ success: true, status: wrapper.status });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Botão "Parar" — encerra o navegador e a geração de QR, MANTENDO a sessão
+// gravada e o aparelho vinculado. O próximo "Conectar" restaura sem pedir QR.
+router.post('/whatsapp/stop', async (req, res) => {
+    try {
+        await stopWaClient(req.user, 'parado pelo usuário');
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 router.post('/whatsapp/disconnect', async (req, res) => { 
     try { 
+        // ATENÇÃO: logout() DESVINCULA o aparelho e apaga a sessão do disco
+        // (Client.js:1351 e LocalAuth.js:56) — o próximo uso exige QR novo.
+        // Para só desligar o navegador, use /whatsapp/stop.
         const wrapper = getWaClientWrapper(req.user);
         if (wrapper.client) {
-            await wrapper.client.logout(); 
+            await wrapper.client.logout();
+            wrapper.client = null;
             wrapper.status = 'disconnected';
             wrapper.qr = null;
+            wrapper.info = null;
         }
         res.json({ success: true }); 
     } catch (e) { res.status(500).json({ error: e.message }); } 
@@ -566,15 +597,9 @@ router.post('/whatsapp/reset', async (req, res) => {
         const username = req.user;
         log(`[WhatsApp Reset] Solicitado reset forçado para: ${username}`);
         
-        if (waClients[username] && waClients[username].client) {
-            try {
-                await waClients[username].client.destroy();
-                log(`[WhatsApp Reset] Cliente destruído.`);
-            } catch (e) {
-                log(`[WhatsApp Reset] Erro ao destruir cliente (ignorado): ${e.message}`);
-            }
-            delete waClients[username];
-        }
+        // Só o navegador é descartado. Apagar waClients[username] levaria junto a
+        // lista de clientes SSE, e os painéis abertos parariam de receber eventos.
+        await stopWaClient(username, 'reset solicitado');
 
         const authPath = path.join(DATA_DIR, `whatsapp_auth_${username}`);
         if (fs.existsSync(authPath)) {
@@ -587,7 +612,8 @@ router.post('/whatsapp/reset', async (req, res) => {
             }
         }
 
-        getWaClientWrapper(username);
+        // Reset é uma ação explícita: religa e já começa a gerar o QR novo.
+        startWaClient(username);
 
         res.json({ success: true, message: "Sessão resetada. Aguarde o novo QR Code." });
 

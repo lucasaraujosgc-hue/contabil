@@ -325,8 +325,20 @@ export const api = {
   },
 
   // WhatsApp
-  getWhatsAppStatus: async (): Promise<{ status: string; qr: string | null; info?: any }> => {
+  getWhatsAppStatus: async (): Promise<{ status: string; qr: string | null; info?: any; running?: boolean }> => {
     const res = await fetch(`${API_URL}/whatsapp/status`, { headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
+  // Liga o navegador e começa a gerar o QR Code.
+  connectWhatsApp: async (): Promise<{ success: boolean; status: string }> => {
+    const res = await fetch(`${API_URL}/whatsapp/connect`, { method: 'POST', headers: getAuthHeader() });
+    return handleResponse(res);
+  },
+
+  // Desliga o navegador e para a geração de QR, MANTENDO o aparelho vinculado.
+  stopWhatsApp: async (): Promise<void> => {
+    const res = await fetch(`${API_URL}/whatsapp/stop`, { method: 'POST', headers: getAuthHeader() });
     return handleResponse(res);
   },
 

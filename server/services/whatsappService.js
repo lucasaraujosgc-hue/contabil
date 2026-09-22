@@ -11,19 +11,6 @@ import { touchConversation } from './conversations.js';
 
 export { MessageMedia };
 
-// Teto de renovações de QR Code antes de encerrar o navegador.
-//
-// Sem leitor do outro lado, o WhatsApp Web renova o QR a cada ~20s
-// INDEFINIDAMENTE, e cada renovação é um pedido de vinculação de dispositivo ao
-// servidor do WhatsApp. Medido no log deste sistema: ~4.900 por dia, por dias
-// seguidos, sempre que a sessão caía e ninguém reconectava.
-//
-// Quem conta é a própria whatsapp-web.js (Client.js:206-214): ao estourar, ela
-// emite DISCONNECTED('Max qrcode retries reached') e chama await this.destroy(),
-// awaitado e sequenciado por dentro da lib.
-//
-// 15 dá ~5 minutos de QR na tela, folgado para escanear, e corta o descontrole.
-const MAX_QR = Math.max(1, Number(process.env.WA_MAX_QR) || 15);
 
 // --- HELPER: Puppeteer Lock Cleaner ---
 const cleanPuppeteerLocks = (dir) => {
@@ -147,19 +134,55 @@ export const upsertContactCache = async (db, contactId, contactName, phoneNumber
 };
 
 // --- MULTI-TENANCY: WhatsApp client wrapper ---
+// LEITURA. Garante o objeto de estado e devolve — nunca liga o navegador.
+// É o que a rota de status e as rotas de ação usam: perguntar "está conectado?"
+// não pode ter como efeito colateral iniciar uma sessão.
 export const getWaClientWrapper = (username) => {
     if (!username) return null;
-    
     if (!waClients[username]) {
-        log(`[WhatsApp Init] Inicializando cliente para usuário: ${username}`);
-        
         waClients[username] = {
             client: null,
             qr: null,
             status: 'disconnected',
             info: null,
-            sseClients: []
+            sseClients: [],
         };
+    }
+    return waClients[username];
+};
+
+// Encerra o navegador MANTENDO a sessão gravada e o aparelho vinculado.
+// Diferente do logout: aqui o próximo "Conectar" restaura do disco, sem QR novo.
+export const stopWaClient = async (username, motivo = '') => {
+    const w = waClients[username];
+    if (!w) return;
+
+    const client = w.client;
+    w.client = null;
+    w.status = 'disconnected';
+    w.qr = null;
+    w.info = null;
+
+    if (!client) return;
+    log(`[WhatsApp] Encerrando navegador de ${username}${motivo ? ` (${motivo})` : ''}`);
+    try {
+        await client.destroy();
+    } catch (e) {
+        log(`[WhatsApp] Falha ao encerrar navegador de ${username}: ${e.message}`);
+    }
+};
+
+// AÇÃO. Único caminho que liga o navegador e começa a gerar QR Code.
+export const startWaClient = (username) => {
+    if (!username) return null;
+    getWaClientWrapper(username);
+
+    if (!waClients[username].client) {
+        log(`[WhatsApp Init] Inicializando cliente para usuário: ${username}`);
+
+        // O objeto de estado já existe (getWaClientWrapper acima). Recriá-lo aqui
+        // descartaria a lista de clientes SSE, e os painéis abertos parariam de
+        // receber eventos até alguém recarregar a página.
 
         const authPath = path.join(DATA_DIR, `whatsapp_auth_${username}`);
         if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
@@ -184,7 +207,6 @@ export const getWaClientWrapper = (username) => {
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: username, dataPath: authPath }), 
             webVersionCache,
-            qrMaxRetries: MAX_QR,
             puppeteer: {
                 headless: true,
                 executablePath: puppeteerExecutablePath,
@@ -484,6 +506,8 @@ export const getWaClientWrapper = (username) => {
             // segue para a tela de QR, onde o qrMaxRetries o encerra.
             // Para religar depois disso, use "Resetar Conexão" na tela do WhatsApp.
             if (reason !== 'LOGOUT') w.client = null;
+            // Sem teto automático de QR: se a sessão cair e o navegador voltar
+            // para a tela de QR, ele fica gerando até alguém apertar "Parar".
         });
 
         client.initialize().catch((err) => {
