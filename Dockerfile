@@ -7,8 +7,9 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 COPY package*.json ./
+# o postinstall aplica a correção de envio de mídia no whatsapp-web.js
+COPY scripts/patch-wwebjs.mjs ./scripts/
 
-# npm install já compila o better-sqlite3 nativamente aqui
 RUN npm install
 
 COPY . .
