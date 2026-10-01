@@ -65,6 +65,19 @@ export const safeSendMessage = async (client, chatId, content, options = {}) => 
                 if (contactId && contactId._serialized) {
                     finalChatId = contactId._serialized;
                 }
+            } else if (finalChatId.endsWith('@lid')) {
+                // Contatos novos (modo privacidade do WhatsApp) chegam como "<id>@lid".
+                // Mandar MÍDIA direto pro @lid quebra dentro do próprio WhatsApp Web
+                // ("Data passed to getter must include an id property") — o Store não
+                // tem o contato totalmente materializado nesse endereçamento. Resolve
+                // pro @c.us real quando existir; mantém @lid só quando o contato não
+                // expõe telefone (nesse caso o envio de mídia pode não funcionar mesmo).
+                try {
+                    const [pair] = await client.getContactLidAndPhone([finalChatId]);
+                    if (pair?.pn) finalChatId = pair.pn;
+                } catch (lidErr) {
+                    log(`[WhatsApp] Erro não bloqueante ao resolver @lid->telefone: ${lidErr.message}`);
+                }
             }
         } catch (idErr) {
             log(`[WhatsApp] Erro não bloqueante ao resolver getNumberId: ${idErr.message}`);
