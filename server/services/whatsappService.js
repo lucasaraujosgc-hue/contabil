@@ -12,28 +12,68 @@ import { touchConversation } from './conversations.js';
 export { MessageMedia };
 
 // --- HELPER: Puppeteer Lock Cleaner ---
+// As travas do Chromium são SYMLINKS para "<hostname>-<pid>". Depois que o
+// container reinicia, o alvo não existe mais e fs.existsSync() devolve false
+// para um symlink quebrado — por isso NÃO dá pra checar existência antes: tem
+// que tentar remover direto (lstat enxerga o link em si).
 const cleanPuppeteerLocks = (dir) => {
     const locks = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-    if (fs.existsSync(dir)) {
-        locks.forEach(lock => {
-            const lockPath = path.join(dir, lock);
-            if (fs.existsSync(lockPath)) {
-                try {
-                    fs.unlinkSync(lockPath);
-                    log(`[Puppeteer Fix] Trava removida: ${lockPath}`);
-                } catch (e) {}
-            }
-        });
-        const defaultDir = path.join(dir, 'Default');
-        if (fs.existsSync(defaultDir)) {
-             locks.forEach(lock => {
-                const lockPath = path.join(defaultDir, lock);
-                if (fs.existsSync(lockPath)) {
-                    try { fs.unlinkSync(lockPath); } catch (e) {}
-                }
-            });
+    for (const base of [dir, path.join(dir, 'Default')]) {
+        for (const lock of locks) {
+            const lockPath = path.join(base, lock);
+            try {
+                fs.lstatSync(lockPath);          // lança se não existe (nem como link)
+                fs.unlinkSync(lockPath);
+                log(`[Puppeteer Fix] Trava removida: ${lockPath}`);
+            } catch (e) { /* não existe — ok */ }
         }
     }
+};
+
+// --- Auto-recuperação do cliente ---
+// Se o Chromium trava / a página do WhatsApp recarrega e a lib não consegue
+// reinjetar, o cliente fica morto. Em vez de exigir restart manual do serviço,
+// derruba e sobe de novo (mantendo a sessão salva e os SSE conectados).
+const MAX_RESTARTS = 5;
+const restartState = {}; // username -> { attempts, pending }
+
+export const restartWaClient = (username, reason = '') => {
+    if (!username) return;
+    const st = (restartState[username] = restartState[username] || { attempts: 0, pending: false });
+    if (st.pending) return;
+    if (st.attempts >= MAX_RESTARTS) {
+        log(`[WhatsApp Recover] ${username}: ${MAX_RESTARTS} tentativas sem sucesso — parando. Use "Resetar sessão" ou reinicie o serviço.`);
+        if (waClients[username]) waClients[username].status = 'error';
+        return;
+    }
+    st.pending = true;
+    st.attempts++;
+    const delay = 5000 * st.attempts;
+    log(`[WhatsApp Recover] ${username}: reiniciando cliente em ${delay / 1000}s (tentativa ${st.attempts}/${MAX_RESTARTS}). Motivo: ${reason}`);
+    if (waClients[username]) waClients[username].status = 'disconnected';
+
+    setTimeout(async () => {
+        const old = waClients[username];
+        const sse = old?.sseClients || [];
+        try {
+            if (old?.client) {
+                await Promise.race([
+                    old.client.destroy(),
+                    new Promise((r) => setTimeout(r, 15000)),
+                ]);
+            }
+        } catch (e) { log(`[WhatsApp Recover] erro ao destruir cliente antigo (ignorado): ${e.message}`); }
+        delete waClients[username];
+        st.pending = false;
+        try {
+            const fresh = getWaClientWrapper(username);
+            if (fresh) fresh.sseClients = sse;
+        } catch (e) { log(`[WhatsApp Recover] falha ao recriar cliente`, e); }
+    }, delay);
+};
+
+export const recoverAllWaClients = (reason) => {
+    for (const username of Object.keys(waClients)) restartWaClient(username, reason);
 };
 
 // --- HELPER: Robust WhatsApp Send ---
@@ -417,6 +457,7 @@ export const getWaClientWrapper = (username) => {
             waClients[username].status = 'connected';
             waClients[username].qr = null;
             waClients[username].info = client.info;
+            if (restartState[username]) restartState[username].attempts = 0; // conectou: zera o contador
 
             // Versão do WhatsApp Web em uso — copie este número pro WA_WEB_VERSION do
             // .env se um dia precisar travar a versão (erros "Evaluation failed").
@@ -470,15 +511,21 @@ export const getWaClientWrapper = (username) => {
             waClients[username].status = 'error';
         });
         
-        client.on('disconnected', (reason) => { 
+        client.on('disconnected', (reason) => {
+            if (waClients[username]?.client !== client) return; // cliente antigo, já substituído
             log(`[WhatsApp Event] Desconectado (${username}). Razão: ${reason}`);
             waClients[username].status = 'disconnected';
             waClients[username].info = null;
+            // LOGOUT = desconectado pelo celular: precisa de QR novo, não adianta religar.
+            if (reason !== 'LOGOUT') restartWaClient(username, `disconnected: ${reason}`);
         });
 
         client.initialize().catch((err) => {
+            if (waClients[username]?.client !== client) return;
             log(`[WhatsApp Init] ERRO FATAL (${username})`, err);
             waClients[username].status = 'error';
+            cleanPuppeteerLocks(sessionPath);
+            restartWaClient(username, `falha no initialize: ${String(err?.message || err).split('\n')[0]}`);
         });
         
         waClients[username].client = client;

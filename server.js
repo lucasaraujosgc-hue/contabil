@@ -11,6 +11,7 @@ import { seedAdminIfEmpty } from './server/services/agents.js';
 import { migrateConversations } from './server/services/conversations.js';
 import { setupRoutes } from './server/routes/index.js';
 import { startCron } from './server/services/cronService.js';
+import { recoverAllWaClients } from './server/services/whatsappService.js';
 
 log("Servidor iniciando...");
 log(`Diretório de dados: ${DATA_DIR}`);
@@ -42,5 +43,17 @@ app.get(/.*/, (req, res) => {
 
 // --- CRON JOB ---
 startCron();
+
+// Rejeições não tratadas vindas do whatsapp-web.js / Puppeteer (ex.: timeout ao
+// reinjetar depois que a página do WhatsApp recarrega) derrubavam o processo
+// inteiro — API, cron e envios em andamento junto. Loga, mantém o servidor de pé
+// e manda o cliente de WhatsApp se recuperar sozinho.
+process.on('unhandledRejection', (reason) => {
+    const text = String(reason?.stack || reason || '');
+    log('[FATAL evitado] unhandledRejection', reason);
+    if (/whatsapp-web\.js|puppeteer|auth timeout/i.test(text)) {
+        recoverAllWaClients(`unhandledRejection: ${text.split('\n')[0].slice(0, 120)}`);
+    }
+});
 
 app.listen(PORT, () => log(`Server running at http://localhost:${PORT}`));
