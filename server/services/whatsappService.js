@@ -221,8 +221,25 @@ export const getWaClientWrapper = (username) => {
             : { type: 'none' }; // 'none' = usa a versão embutida na própria WhatsApp Web ao carregar, sem cache
 
         const client = new Client({
-            authStrategy: new LocalAuth({ clientId: username, dataPath: authPath }), 
+            authStrategy: new LocalAuth({ clientId: username, dataPath: authPath }),
             webVersionCache,
+            // Em Chromium automatizado navigator.storage.persist() devolve false.
+            // O WhatsApp Web trata isso como armazenamento não confiável e, num
+            // reload interno, apaga o IndexedDB e redireciona para post_logout=1 —
+            // um LOGOUT espontâneo que exige QR novo (upstream PR #201937, aberta).
+            // Roda dentro da página, antes dos scripts do WhatsApp.
+            evalOnNewDoc: () => {
+                try {
+                    if (typeof navigator !== 'undefined' && navigator.storage) {
+                        const orig = navigator.storage.persist ? navigator.storage.persist.bind(navigator.storage) : null;
+                        navigator.storage.persist = async () => {
+                            if (orig) { try { await orig(); } catch (e) { /* ignora, força concedido */ } }
+                            return true;
+                        };
+                        navigator.storage.persisted = async () => true;
+                    }
+                } catch (e) { /* não crítico */ }
+            },
             puppeteer: {
                 headless: true,
                 executablePath: puppeteerExecutablePath,
@@ -443,7 +460,35 @@ export const getWaClientWrapper = (username) => {
             }
         });
 
+        // Diagnóstico: registra POR QUE a página recarrega/desloga. Sem isso um
+        // LOGOUT chega sem causa nenhuma no log.
+        let diagAttached = false;
+        const attachPageDiagnostics = () => {
+            const page = client.pupPage;
+            if (diagAttached || !page) return;
+            diagAttached = true;
+            page.on('framenavigated', (frame) => {
+                try {
+                    if (frame.parentFrame() !== null) return;
+                    const url = frame.url();
+                    const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
+                    log(`[WhatsApp Diag] página navegou/recarregou${q ? ` (${q})` : ''}`);
+                } catch (e) {}
+            });
+            page.on('console', (msg) => {
+                try {
+                    const text = msg.text();
+                    if (/persistence denied|aquire-persistent-storage|logout|logged out|handlePreviousLogout/i.test(text)) {
+                        log(`[WhatsApp Diag] console da página: ${text.slice(0, 300)}`);
+                    }
+                } catch (e) {}
+            });
+        };
+        client.on('loading_screen', attachPageDiagnostics);
+        client.on('authenticated', attachPageDiagnostics);
+
         client.on('qr', (qr) => {
+            attachPageDiagnostics();
             log(`[WhatsApp Event] QR Code gerado para ${username}`);
             QRCode.toDataURL(qr, (err, url) => { 
                 if (err) log(`[WhatsApp Event] Erro QR`, err);
