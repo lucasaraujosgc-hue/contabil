@@ -3,6 +3,7 @@ const { Client, LocalAuth, MessageMedia } = pkg;
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { DATA_DIR, UPLOADS_DIR } from '../config.js';
 import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
@@ -28,6 +29,59 @@ const cleanPuppeteerLocks = (dir) => {
             } catch (e) { /* não existe — ok */ }
         }
     }
+};
+
+// --- Instância única ---
+// Só UM processo pode usar a sessão do WhatsApp por vez. Num redeploy o container
+// novo sobe com o antigo ainda vivo; se os dois abrirem o mesmo perfil, o WhatsApp
+// vê o mesmo aparelho conectado duas vezes e desloga. Cada processo mantém um
+// arquivo com batimento em DATA_DIR/instances; quem encontra outro batimento
+// recente espera antes de iniciar o cliente.
+export const INSTANCE_ID = `${os.hostname()}-${process.pid}`;
+const INSTANCES_DIR = path.join(DATA_DIR, 'instances');
+const HEARTBEAT_MS = 10000;
+const ALIVE_WINDOW_MS = 35000;
+const myInstanceFile = () => path.join(INSTANCES_DIR, `${INSTANCE_ID}.json`);
+
+export const startInstanceHeartbeat = () => {
+    const beat = () => {
+        try {
+            fs.mkdirSync(INSTANCES_DIR, { recursive: true });
+            fs.writeFileSync(myInstanceFile(), JSON.stringify({ id: INSTANCE_ID, ts: Date.now() }));
+        } catch (e) { /* volume indisponível: segue sem a proteção */ }
+    };
+    beat();
+    setInterval(beat, HEARTBEAT_MS).unref();
+    log(`[Instância] ${INSTANCE_ID} iniciada.`);
+};
+
+export const stopInstanceHeartbeat = () => { try { fs.unlinkSync(myInstanceFile()); } catch (e) {} };
+
+export const otherLiveInstance = () => {
+    try {
+        for (const f of fs.readdirSync(INSTANCES_DIR)) {
+            const full = path.join(INSTANCES_DIR, f);
+            try {
+                const d = JSON.parse(fs.readFileSync(full, 'utf8'));
+                if (d.id === INSTANCE_ID) continue;
+                if (Date.now() - d.ts < ALIVE_WINDOW_MS) return d.id;
+                fs.unlinkSync(full); // batimento velho: processo morto
+            } catch (e) { /* arquivo meio escrito: ignora */ }
+        }
+    } catch (e) { /* pasta ainda não existe */ }
+    return null;
+};
+
+// Encerramento limpo: fecha o Chromium direito (grava a sessão) antes de sair.
+export const shutdownWaClients = async () => {
+    await Promise.all(Object.keys(waClients).map(async (u) => {
+        try {
+            if (waClients[u]?.client) {
+                await Promise.race([waClients[u].client.destroy(), new Promise((r) => setTimeout(r, 8000))]);
+            }
+        } catch (e) {}
+    }));
+    stopInstanceHeartbeat();
 };
 
 // --- Auto-recuperação do cliente ---
@@ -190,15 +244,20 @@ export const getWaClientWrapper = (username) => {
     if (!username) return null;
     
     if (!waClients[username]) {
-        log(`[WhatsApp Init] Inicializando cliente para usuário: ${username}`);
-        
-        waClients[username] = {
-            client: null,
-            qr: null,
-            status: 'disconnected',
-            info: null,
-            sseClients: []
-        };
+        waClients[username] = { client: null, qr: null, status: 'disconnected', info: null, sseClients: [] };
+    }
+    const entry = waClients[username];
+
+    if (!entry.client) {
+        const other = otherLiveInstance();
+        if (other) {
+            if (!entry.waitTimer) {
+                log(`[WhatsApp Init] OUTRA INSTÂNCIA ATIVA (${other}) usando a sessão — esta (${INSTANCE_ID}) aguarda ela encerrar antes de conectar.`);
+                entry.waitTimer = setTimeout(() => { entry.waitTimer = null; getWaClientWrapper(username); }, 15000);
+            }
+            return entry;
+        }
+        log(`[WhatsApp Init] Inicializando cliente para usuário: ${username} (instância ${INSTANCE_ID})`);
 
         const authPath = path.join(DATA_DIR, `whatsapp_auth_${username}`);
         if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
@@ -460,9 +519,19 @@ export const getWaClientWrapper = (username) => {
             }
         });
 
-        // Diagnóstico: registra POR QUE a página recarrega/desloga. Sem isso um
-        // LOGOUT chega sem causa nenhuma no log.
+        // Diagnóstico: guarda as últimas mensagens de console/erro da página e as
+        // despeja quando acontece um LOGOUT — é a única pista do motivo.
         let diagAttached = false;
+        const pageTrail = [];
+        const trail = (line) => {
+            pageTrail.push(`${new Date().toISOString().slice(11, 19)} ${line}`.slice(0, 400));
+            if (pageTrail.length > 40) pageTrail.shift();
+        };
+        const dumpTrail = (why) => {
+            log(`[WhatsApp Diag] ${why} — últimas ${pageTrail.length} mensagens da página:`);
+            for (const l of pageTrail) log(`[WhatsApp Diag]   ${l}`);
+            pageTrail.length = 0;
+        };
         const attachPageDiagnostics = () => {
             const page = client.pupPage;
             if (diagAttached || !page) return;
@@ -477,12 +546,11 @@ export const getWaClientWrapper = (username) => {
             });
             page.on('console', (msg) => {
                 try {
-                    const text = msg.text();
-                    if (/persistence denied|aquire-persistent-storage|logout|logged out|handlePreviousLogout/i.test(text)) {
-                        log(`[WhatsApp Diag] console da página: ${text.slice(0, 300)}`);
-                    }
+                    const t = msg.type();
+                    if (t === 'error' || t === 'warn' || t === 'warning') trail(`[${t}] ${msg.text()}`);
                 } catch (e) {}
             });
+            page.on('pageerror', (err) => { try { trail(`[pageerror] ${err?.message || err}`); } catch (e) {} });
         };
         client.on('loading_screen', attachPageDiagnostics);
         client.on('authenticated', attachPageDiagnostics);
@@ -497,6 +565,7 @@ export const getWaClientWrapper = (username) => {
             }); 
         });
         
+        let seededOnce = false;
         client.on('ready', async () => {
             log(`[WhatsApp Event] CLIENTE PRONTO (${username})`);
             waClients[username].status = 'connected';
@@ -511,9 +580,12 @@ export const getWaClientWrapper = (username) => {
                 log(`[WhatsApp] WhatsApp Web versão em uso: ${wwv}`);
             } catch (e) { /* não crítico */ }
 
-            // ============================================================
-            // FIX 1 — Popular cache de contatos proativamente ao conectar
-            // ============================================================
+            // Popular o cache de contatos ao conectar — UMA vez por cliente (o
+            // 'ready' pode disparar de novo) e SEM consultar o servidor: antes
+            // fazíamos um getNumberId por contato, dezenas de verificações de número
+            // em rajada logo após parear, que é padrão de abuso para o WhatsApp.
+            if (seededOnce) return;
+            seededOnce = true;
             try {
                 const db = getDb(username);
                 if (db) {
@@ -521,32 +593,20 @@ export const getWaClientWrapper = (username) => {
                     let seeded = 0;
                     for (const chat of chats) {
                         if (chat.isGroup) continue;
-                        const chatId = chat.id._serialized;
+                        const chatId = chat.id?._serialized;
                         if (!chatId) continue;
-                        const isLid = chatId.includes('@lid');
-                        let resolvedId = chatId;
-                        let phone = isLid ? null : chatId.replace('@c.us', '').replace(/\D/g, '');
-
-                        if (!isLid && phone) {
-                            try {
-                                const numberId = await client.getNumberId(phone);
-                                if (numberId && numberId._serialized) {
-                                    resolvedId = numberId._serialized;
-                                }
-                            } catch (_) {}
-                        }
-
-                        const contactName = chat.name || chat.id.user || resolvedId;
-                        upsertContactCache(db, resolvedId, contactName, phone);
+                        const phone = chatId.endsWith('@c.us') ? chatId.replace('@c.us', '').replace(/\D/g, '') : null;
+                        upsertContactCache(db, chatId, chat.name || chat.id.user || chatId, phone);
                         seeded++;
                     }
                     log(`[WhatsApp Cache] ${seeded} contatos populados no cache ao conectar.`);
                 }
             } catch (e) {
+                seededOnce = false;
                 log(`[WhatsApp Cache] Erro ao popular cache na inicialização: ${e.message}`);
             }
         });
-        
+
         client.on('authenticated', () => {
             log(`[WhatsApp Event] Autenticado (${username})`);
         });
@@ -559,6 +619,7 @@ export const getWaClientWrapper = (username) => {
         client.on('disconnected', (reason) => {
             if (waClients[username]?.client !== client) return; // cliente antigo, já substituído
             log(`[WhatsApp Event] Desconectado (${username}). Razão: ${reason}`);
+            dumpTrail(`desconectado: ${reason}`);
             waClients[username].status = 'disconnected';
             waClients[username].info = null;
             // LOGOUT = desconectado pelo celular: precisa de QR novo, não adianta religar.

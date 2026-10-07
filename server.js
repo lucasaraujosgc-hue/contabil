@@ -11,7 +11,7 @@ import { seedAdminIfEmpty } from './server/services/agents.js';
 import { migrateConversations } from './server/services/conversations.js';
 import { setupRoutes } from './server/routes/index.js';
 import { startCron } from './server/services/cronService.js';
-import { recoverAllWaClients } from './server/services/whatsappService.js';
+import { recoverAllWaClients, startInstanceHeartbeat, shutdownWaClients } from './server/services/whatsappService.js';
 
 log("Servidor iniciando...");
 log(`Diretório de dados: ${DATA_DIR}`);
@@ -55,5 +55,21 @@ process.on('unhandledRejection', (reason) => {
         recoverAllWaClients(`unhandledRejection: ${text.split('\n')[0].slice(0, 120)}`);
     }
 });
+
+// Redeploy/parada do container manda SIGTERM. Sem tratar, o Docker espera 10s e
+// mata tudo com SIGKILL — o Chromium morre no meio da gravação da sessão do
+// WhatsApp. Fecha o cliente direito e libera a sessão para a próxima instância.
+let shuttingDown = false;
+for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        log(`[Shutdown] ${sig} recebido — fechando o WhatsApp antes de sair.`);
+        try { await shutdownWaClients(); } catch (e) {}
+        process.exit(0);
+    });
+}
+
+startInstanceHeartbeat();
 
 app.listen(PORT, () => log(`Server running at http://localhost:${PORT}`));

@@ -51,6 +51,24 @@ const PATCHES = [
                 .replace(b, '{ timeout: authTimeout, polling: 200 }, // [patch-wwebjs] upstream PR #201942\n            );\n            const needAuthentication');
         },
     },
+    {
+        // 3. getchats-settled (upstream issue #201845 / PR #201934, sem merge)
+        //    getChats() usa Promise.all: basta UM chat falhar ao serializar (acontece
+        //    com chats @lid) para a lista inteira ser rejeitada com um erro minificado
+        //    ("t", "r"). Com allSettled os chats bons voltam e o ruim é ignorado.
+        name: 'getchats-settled',
+        file: path.join(lib, 'util', 'Injected', 'Utils.js'),
+        done: (s) => s.includes('[patch-wwebjs] getchats-settled'),
+        apply: (s) => {
+            const re = /(window\.WWebJS\.getChats = async \(\) => \{[\s\S]*?)return await Promise\.all\(chatPromises\);/;
+            if (!re.test(s)) return null;
+            return s.replace(re,
+                '$1// [patch-wwebjs] getchats-settled\n' +
+                '        return (await Promise.allSettled(chatPromises))\n' +
+                "            .filter((r) => r.status === 'fulfilled')\n" +
+                '            .map((r) => r.value);');
+        },
+    },
 ];
 
 for (const p of PATCHES) {
