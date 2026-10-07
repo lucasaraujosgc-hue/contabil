@@ -9,6 +9,7 @@ import { log } from '../logger.js';
 import { getDb } from '../db/index.js';
 import { waClients, broadcastWaEvent } from '../state/waState.js';
 import { touchConversation } from './conversations.js';
+import { installWaLogTap, parseWaTapLine } from './waLogTap.js';
 
 export { MessageMedia };
 
@@ -84,6 +85,22 @@ export const shutdownWaClients = async () => {
     stopInstanceHeartbeat();
 };
 
+// --- Acomodação pós-pareamento ---
+// Logo depois de ler o QR o WhatsApp Web ainda está sincronizando (histórico,
+// contatos, estado do app) e faz um recarregamento programado. Trabalho do
+// aplicativo sobre o armazenamento da sessão nessa janela derruba a sessão
+// recém-pareada (ver docs: "WhatsApp: logout espontâneo"). Enquanto durar, as
+// consultas AUTOMÁTICAS ao WhatsApp usam o banco local. Enviar/receber seguem
+// normais. Só vale para pareamento novo (QR lido neste processo).
+export const SETTLE_MIN = (() => {
+    const n = Number(process.env.WA_SETTLE_MINUTES);
+    return Number.isFinite(n) && n >= 0 ? n : 10;
+})();
+export const SETTLE_MS = SETTLE_MIN * 60 * 1000;
+export const isSettling = (entry) => !!(entry && entry.pairedAt) && (Date.now() - entry.pairedAt) < SETTLE_MS;
+export const settleRemainingMin = (entry) =>
+    isSettling(entry) ? Math.max(1, Math.ceil((SETTLE_MS - (Date.now() - entry.pairedAt)) / 60000)) : 0;
+
 // --- Auto-recuperação do cliente ---
 // Se o Chromium trava / a página do WhatsApp recarrega e a lib não consegue
 // reinjetar, o cliente fica morto. Em vez de exigir restart manual do serviço,
@@ -158,19 +175,6 @@ export const safeSendMessage = async (client, chatId, content, options = {}) => 
 
                 if (contactId && contactId._serialized) {
                     finalChatId = contactId._serialized;
-                }
-            } else if (finalChatId.endsWith('@lid')) {
-                // Contatos novos (modo privacidade do WhatsApp) chegam como "<id>@lid".
-                // Mandar MÍDIA direto pro @lid quebra dentro do próprio WhatsApp Web
-                // ("Data passed to getter must include an id property") — o Store não
-                // tem o contato totalmente materializado nesse endereçamento. Resolve
-                // pro @c.us real quando existir; mantém @lid só quando o contato não
-                // expõe telefone (nesse caso o envio de mídia pode não funcionar mesmo).
-                try {
-                    const [pair] = await client.getContactLidAndPhone([finalChatId]);
-                    if (pair?.pn) finalChatId = pair.pn;
-                } catch (lidErr) {
-                    log(`[WhatsApp] Erro não bloqueante ao resolver @lid->telefone: ${lidErr.message}`);
                 }
             }
         } catch (idErr) {
@@ -519,58 +523,127 @@ export const getWaClientWrapper = (username) => {
             }
         });
 
-        // Diagnóstico: guarda as últimas mensagens de console/erro da página e as
-        // despeja quando acontece um LOGOUT — é a única pista do motivo.
-        let diagAttached = false;
+        // ── Diagnóstico ─────────────────────────────────────────────────────────
+        // Mantém um rastro em memória do que a página do WhatsApp Web disse:
+        //  - o log INTERNO do WhatsApp Web (waLogTap.js): é lá — e não no console —
+        //    que ele escreve o motivo exato antes de deslogar a sessão;
+        //  - erros/avisos de console e exceções da página.
+        // O rastro é despejado no log quando a sessão cai. Linhas de ERRO do
+        // WhatsApp Web saem na hora (são raras numa sessão saudável).
+        const TRAIL_MAX = 800;
         const pageTrail = [];
         const trail = (line) => {
-            pageTrail.push(`${new Date().toISOString().slice(11, 19)} ${line}`.slice(0, 400));
-            if (pageTrail.length > 40) pageTrail.shift();
+            pageTrail.push(`${new Date().toISOString().slice(11, 19)} ${line}`.slice(0, 1000));
+            if (pageTrail.length > TRAIL_MAX) pageTrail.shift();
         };
         const dumpTrail = (why) => {
-            log(`[WhatsApp Diag] ${why} — últimas ${pageTrail.length} mensagens da página:`);
+            log(`[WhatsApp Diag] ${why} — últimas ${pageTrail.length} linhas da página (log interno do WhatsApp Web + console):`);
             for (const l of pageTrail) log(`[WhatsApp Diag]   ${l}`);
             pageTrail.length = 0;
         };
+        const SUBJECT = /syncd|bootstrap|logout|logged out|logging out|fatal|critical|history.?sync|key.?share|missing key|takeover|conflict|unlink|revoke/i;
+        let errBudget = { start: Date.now(), n: 0 };
+        const onConsole = (msg) => {
+            let text = '';
+            try { text = msg.text(); } catch (e) { return; }
+            const tap = parseWaTapLine(text);
+            if (tap) {
+                trail(`[wa:${tap.label}] ${tap.text}`);
+                if (tap.level >= 4) {
+                    const now = Date.now();
+                    if (now - errBudget.start > 60000) errBudget = { start: now, n: 0 };
+                    if (errBudget.n++ < 20) log(`[WhatsApp Web ERRO] ${tap.text.slice(0, 600)}`);
+                }
+                return;
+            }
+            let type = '';
+            try { type = msg.type(); } catch (e) {}
+            // erros/avisos de console + linhas dos workers (que logam via console.log)
+            if (/Permissions-Policy header/.test(text)) return; // ruído do Chromium
+            if (type === 'error' || type === 'warn' || type === 'warning' || SUBJECT.test(text)) {
+                trail(`[console:${type}] ${text}`);
+            }
+        };
+
+        let diagPage = null;
+        const armLogTap = (page) => {
+            installWaLogTap(page).then((r) => {
+                if (r === 'instalado') log('[WhatsApp Diag] captura do log interno do WhatsApp Web ativa.');
+                else if (r !== 'ja-instalado') log(`[WhatsApp Diag] captura do log interno indisponível (${r}).`);
+            }).catch(() => { /* página fechou/navegou: o próximo framenavigated tenta de novo */ });
+        };
         const attachPageDiagnostics = () => {
             const page = client.pupPage;
-            if (diagAttached || !page) return;
-            diagAttached = true;
+            if (!page || diagPage === page) return;
+            diagPage = page;
             page.on('framenavigated', (frame) => {
                 try {
                     if (frame.parentFrame() !== null) return;
                     const url = frame.url();
                     const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
                     log(`[WhatsApp Diag] página navegou/recarregou${q ? ` (${q})` : ''}`);
+                    trail(`[nav] ${q || '/'}`);
+                    armLogTap(page); // contexto novo: o gancho precisa ser reinstalado
                 } catch (e) {}
             });
-            page.on('console', (msg) => {
-                try {
-                    const t = msg.type();
-                    if (t === 'error' || t === 'warn' || t === 'warning') trail(`[${t}] ${msg.text()}`);
-                } catch (e) {}
-            });
+            page.on('console', onConsole);
             page.on('pageerror', (err) => { try { trail(`[pageerror] ${err?.message || err}`); } catch (e) {} });
+            armLogTap(page);
         };
         client.on('loading_screen', attachPageDiagnostics);
         client.on('authenticated', attachPageDiagnostics);
+        // a página existe bem antes do primeiro evento da lib — pega o mais cedo possível
+        const earlyAttach = setInterval(() => {
+            if (client.pupPage) { clearInterval(earlyAttach); attachPageDiagnostics(); }
+        }, 300);
+        setTimeout(() => clearInterval(earlyAttach), 120000);
 
         client.on('qr', (qr) => {
             attachPageDiagnostics();
+            // QR na tela = não há pareamento ativo; o próximo 'ready' será um pareamento NOVO
+            waClients[username].sawQr = true;
+            waClients[username].pairedAt = null;
             log(`[WhatsApp Event] QR Code gerado para ${username}`);
-            QRCode.toDataURL(qr, (err, url) => { 
+            QRCode.toDataURL(qr, (err, url) => {
                 if (err) log(`[WhatsApp Event] Erro QR`, err);
-                waClients[username].qr = url; 
+                waClients[username].qr = url;
                 waClients[username].status = 'generating_qr';
-            }); 
+            });
         });
-        
+
         let seededOnce = false;
+        let readyCount = 0;
         client.on('ready', async () => {
+            // A lib emite 'authenticated' + 'ready' a CADA mudança de Socket.hasSynced,
+            // sem olhar o valor. No logout o WhatsApp Web zera hasSynced (clearState),
+            // então chega um 'ready' espúrio que na verdade é o INÍCIO do logout.
+            readyCount++;
+            if (readyCount > 1) {
+                let synced = null;
+                try {
+                    synced = await client.pupPage.evaluate(() => window.require('WAWebSocketModel').Socket.hasSynced === true);
+                } catch (e) { /* página já em desmontagem */ }
+                if (synced !== true) {
+                    log(`[WhatsApp Diag] 'ready' espúrio (hasSynced=${synced}): o WhatsApp Web está ENCERRANDO a sessão. Aguardando o motivo...`);
+                    trail('[diag] hasSynced caiu — início do logout');
+                    return;
+                }
+            }
+
+            const entry = waClients[username];
+            entry.readyAt = Date.now();
+            if (entry.sawQr && !entry.pairedAt) {
+                entry.pairedAt = Date.now();
+                entry.sawQr = false;
+                if (SETTLE_MS > 0) {
+                    log(`[WhatsApp] Pareamento NOVO. Acomodação de ${SETTLE_MIN} min: consultas automáticas ao WhatsApp (lista de chats, fotos, nomes, histórico) ficam suspensas e usam o banco local. Enviar e receber mensagens funciona normalmente.`);
+                }
+            }
+
             log(`[WhatsApp Event] CLIENTE PRONTO (${username})`);
-            waClients[username].status = 'connected';
-            waClients[username].qr = null;
-            waClients[username].info = client.info;
+            entry.status = 'connected';
+            entry.qr = null;
+            entry.info = client.info;
             if (restartState[username]) restartState[username].attempts = 0; // conectou: zera o contador
 
             // Versão do WhatsApp Web em uso — copie este número pro WA_WEB_VERSION do
@@ -580,15 +653,17 @@ export const getWaClientWrapper = (username) => {
                 log(`[WhatsApp] WhatsApp Web versão em uso: ${wwv}`);
             } catch (e) { /* não crítico */ }
 
-            // Popular o cache de contatos ao conectar — UMA vez por cliente (o
-            // 'ready' pode disparar de novo) e SEM consultar o servidor: antes
-            // fazíamos um getNumberId por contato, dezenas de verificações de número
-            // em rajada logo após parear, que é padrão de abuso para o WhatsApp.
+            // Popular o cache de contatos — UMA vez por cliente e SEM consultar o
+            // servidor (antes: um getNumberId por contato, em rajada). Em pareamento
+            // novo, só depois da acomodação: getChats() serializa todos os chats e
+            // dispara consulta de metadados de cada grupo.
             if (seededOnce) return;
             seededOnce = true;
-            try {
-                const db = getDb(username);
-                if (db) {
+            const seed = async () => {
+                if (waClients[username]?.client !== client || waClients[username].status !== 'connected') return;
+                try {
+                    const db = getDb(username);
+                    if (!db) return;
                     const chats = await client.getChats();
                     let seeded = 0;
                     for (const chat of chats) {
@@ -599,11 +674,17 @@ export const getWaClientWrapper = (username) => {
                         upsertContactCache(db, chatId, chat.name || chat.id.user || chatId, phone);
                         seeded++;
                     }
-                    log(`[WhatsApp Cache] ${seeded} contatos populados no cache ao conectar.`);
+                    log(`[WhatsApp Cache] ${seeded} contatos populados no cache.`);
+                } catch (e) {
+                    seededOnce = false;
+                    log(`[WhatsApp Cache] Erro ao popular cache: ${e.message}`);
                 }
-            } catch (e) {
-                seededOnce = false;
-                log(`[WhatsApp Cache] Erro ao popular cache na inicialização: ${e.message}`);
+            };
+            if (isSettling(entry)) {
+                const t = setTimeout(seed, SETTLE_MS + 30000);
+                if (t.unref) t.unref();
+            } else {
+                seed();
             }
         });
 
@@ -615,14 +696,18 @@ export const getWaClientWrapper = (username) => {
             log(`[WhatsApp Event] FALHA DE AUTENTICAÇÃO (${username}): ${msg}`);
             waClients[username].status = 'error';
         });
-        
+
         client.on('disconnected', (reason) => {
             if (waClients[username]?.client !== client) return; // cliente antigo, já substituído
-            log(`[WhatsApp Event] Desconectado (${username}). Razão: ${reason}`);
+            const e = waClients[username];
+            const since = (t) => (t ? `${Math.round((Date.now() - t) / 1000)}s` : 'n/d');
+            log(`[WhatsApp Event] Desconectado (${username}). Razão: ${reason} | desde o ready: ${since(e.readyAt)} | desde o pareamento: ${since(e.pairedAt)}`);
             dumpTrail(`desconectado: ${reason}`);
-            waClients[username].status = 'disconnected';
-            waClients[username].info = null;
-            // LOGOUT = desconectado pelo celular: precisa de QR novo, não adianta religar.
+            e.status = 'disconnected';
+            e.info = null;
+            e.pairedAt = null;
+            readyCount = 0;
+            // LOGOUT = sessão encerrada pelo WhatsApp/celular: precisa de QR novo, não adianta religar.
             if (reason !== 'LOGOUT') restartWaClient(username, `disconnected: ${reason}`);
         });
 
@@ -633,7 +718,7 @@ export const getWaClientWrapper = (username) => {
             cleanPuppeteerLocks(sessionPath);
             restartWaClient(username, `falha no initialize: ${String(err?.message || err).split('\n')[0]}`);
         });
-        
+
         waClients[username].client = client;
     }
 

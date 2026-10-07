@@ -7,13 +7,24 @@ import { getDb } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import { waClients } from '../state/waState.js';
-import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia, safeSendMessage } from '../services/whatsappService.js';
+import { getWaClientWrapper, upsertContactCache, saveMessagesToDb, MessageMedia, safeSendMessage, isSettling, settleRemainingMin } from '../services/whatsappService.js';
 import { ai, processAI } from '../services/aiService.js';
 import { markViewing, stopViewing } from '../services/presence.js';
 import { waSenderConfig } from '../services/agents.js';
 const router = express.Router();
 
 // Presença: heartbeat de "estou com essa conversa aberta". Devolve quem mais está.
+// Sessão recém-pareada: operações que leem histórico ou criam conversa no
+// WhatsApp Web ficam bloqueadas até a acomodação terminar (ver isSettling).
+const settlingBlock = (wrapper, res) => {
+    if (!isSettling(wrapper)) return false;
+    res.status(409).json({
+        error: `O WhatsApp acabou de ser conectado. Aguarde cerca de ${settleRemainingMin(wrapper)} min para usar esta função — enviar e receber mensagens já funciona.`,
+        settling: true,
+    });
+    return true;
+};
+
 router.post('/whatsapp/viewing/:chatId', (req, res) => {
     res.json({ viewers: markViewing(req.params.chatId, req.agent) });
 });
@@ -35,6 +46,9 @@ router.post('/whatsapp/disconnect', async (req, res) => {
     try { 
         const wrapper = getWaClientWrapper(req.user);
         if (wrapper.client) {
+            // logout manual precisa ficar visível no log: senão é indistinguível de um
+            // logout feito pelo próprio WhatsApp.
+            log(`[WhatsApp] LOGOUT MANUAL solicitado por ${req.agent?.name || req.agent?.username || 'desconhecido'}`);
             await wrapper.client.logout(); 
             wrapper.status = 'disconnected';
             wrapper.qr = null;
@@ -60,6 +74,7 @@ router.get('/whatsapp/messages/:chatId', authenticateToken, async (req, res) => 
     try {
         const wrapper = getWaClientWrapper(req.user);
         if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
+        if (isSettling(wrapper)) return res.json([]); // histórico ao vivo só depois da acomodação
         
         let chat;
         try {
@@ -190,6 +205,7 @@ router.post('/whatsapp/load-history/:chatId', authenticateToken, async (req, res
         if (!wrapper || wrapper.status !== 'connected') {
             return res.status(400).json({ error: 'WhatsApp não conectado' });
         }
+        if (settlingBlock(wrapper, res)) return;
 
         const db = getDb(req.user);
         if (!db) return res.status(500).json({ error: 'DB não encontrado' });
@@ -387,6 +403,7 @@ router.post('/whatsapp/contact', async (req, res) => {
         const { number } = req.body;
         const wrapper = getWaClientWrapper(req.user);
         if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
+        if (settlingBlock(wrapper, res)) return;
         let cleanNumber = number.replace(/\D/g, '');
         if(!cleanNumber.startsWith('55')) cleanNumber = '55' + cleanNumber;
         const contactId = await wrapper.client.getNumberId(cleanNumber);
@@ -398,12 +415,40 @@ router.post('/whatsapp/contact', async (req, res) => {
     } catch(e) { res.status(500).json({error: e.message}); }
 });
 
+// última mensagem de um chat, do NOSSO banco (alimentado pelos eventos de mensagem)
+const lastMessageFromDb = async (db, chatId) => {
+    try {
+        const m = await db.prepare("SELECT body, fromMe, hasMedia, timestamp FROM whatsapp_messages WHERE chatId = ? ORDER BY timestamp DESC LIMIT 1").get(chatId);
+        if (m) return { lastMessage: m.body || (m.hasMedia ? '[Mídia]' : ''), lastMessageFromMe: !!m.fromMe, lastMessageTimestamp: m.timestamp };
+    } catch (e) {}
+    return { lastMessage: '', lastMessageFromMe: false, lastMessageTimestamp: null };
+};
+
 router.get('/whatsapp/chat-info/:chatId', authenticateToken, async (req, res) => {
     try {
         const wrapper = getWaClientWrapper(req.user);
         if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
-        
+
         const chatId = req.params.chatId;
+        const db = getDb(req.user);
+
+        // A última mensagem vem SEMPRE do nosso banco. Antes, para CADA cartão do
+        // Kanban, fazíamos getChatById + fetchMessages no WhatsApp Web:
+        //   - getChatById CRIA a conversa lá quando ela não existe (findOrCreateLatestChat);
+        //   - fetchMessages puxa histórico sob demanda.
+        // Ler não pode ter efeito colateral no armazenamento da sessão.
+        const last = await lastMessageFromDb(db, chatId);
+
+        let cached = null;
+        try { cached = await db.prepare('SELECT name, phone_number FROM whatsapp_contacts WHERE contact_id = ?').get(chatId); } catch (e) {}
+        const cachedName = cached?.name && !String(cached.name).includes('@') ? cached.name : null;
+        const phoneFromId = /^(\d{8,15})@c\.us$/.exec(chatId)?.[1] || null;
+
+        // Sessão recém-pareada: nenhuma consulta ao vivo (foto / contato / LID).
+        if (isSettling(wrapper)) {
+            return res.json({ profilePicUrl: null, pushname: cachedName, number: cached?.phone_number || phoneFromId, ...last, settling: true });
+        }
+
         const profilePicUrl = await wrapper.client.getProfilePicUrl(chatId).catch(() => null);
         const contact = await wrapper.client.getContactById(chatId).catch(() => null);
 
@@ -416,48 +461,100 @@ router.get('/whatsapp/chat-info/:chatId', authenticateToken, async (req, res) =>
                 if (pair?.pn) number = pair.pn.replace(/@c\.us$/, '').replace(/\D/g, '') || number;
             } catch (e) { /* mantém o que tiver */ }
         }
+        number = number || cached?.phone_number || phoneFromId;
+        const pushname = contact ? (contact.pushname || contact.name) : null;
+        // guarda no cache para a próxima vez não depender do WhatsApp ao vivo
+        if (number || pushname) upsertContactCache(db, chatId, pushname || cachedName || chatId, number || null);
 
-        let lastMessage = '';
-        let lastMessageFromMe = false;
-        let lastMessageTimestamp = null;
-        try {
-            const chat = await wrapper.client.getChatById(chatId);
-            const msgs = await chat.fetchMessages({limit: 1});
-            if (msgs && msgs.length > 0) {
-                lastMessage = msgs[0].body || (msgs[0].hasMedia ? '[Mídia]' : '');
-                lastMessageFromMe = msgs[0].fromMe;
-                lastMessageTimestamp = msgs[0].timestamp;
-            }
-        } catch(e) {
-            try {
-                const db = getDb(req.user);
-                const lastMsg = await db.prepare("SELECT body, fromMe, hasMedia, timestamp FROM whatsapp_messages WHERE chatId = ? ORDER BY timestamp DESC LIMIT 1").get(chatId);
-                if (lastMsg) {
-                    lastMessage = lastMsg.body || (lastMsg.hasMedia ? '[Mídia]' : '');
-                    lastMessageFromMe = !!lastMsg.fromMe;
-                    lastMessageTimestamp = lastMsg.timestamp;
-                }
-            } catch(dbErr) {}
-        }
-        
-        res.json({
-            profilePicUrl,
-            pushname: contact ? (contact.pushname || contact.name) : null,
-            number,
-            lastMessage,
-            lastMessageFromMe,
-            lastMessageTimestamp
-        });
+        res.json({ profilePicUrl, pushname: pushname || cachedName, number, ...last });
     } catch(e) {
         res.status(500).json({error: e.message});
     }
 });
 
+// ── /whatsapp/chats ─────────────────────────────────────────────────────────
+// client.getChats() serializa TODOS os chats e consulta metadados de cada grupo.
+// O frontend chama este endpoint ao abrir o Kanban e toda vez que chega mensagem
+// de um chat fora da lista — numa conta movimentada isso virava rajada. Então:
+//   - resposta em cache por 30s e chamadas simultâneas compartilham a mesma busca;
+//   - durante a acomodação pós-pareamento, só o banco local.
+const CHATS_TTL_MS = 30000;
+const chatsCache = new Map(); // chave -> { at, data, pending }
+
+const chatsFromDb = async (db, kanbanCards) => {
+    const now = Date.now() / 1000;
+    const rows = await db.prepare(`
+        SELECT chatId,
+               MAX(timestamp) as timestamp,
+               COUNT(*) as totalMsgs
+        FROM whatsapp_messages
+        WHERE chatId NOT LIKE '%@g.us'
+        GROUP BY chatId
+    `).all();
+    const out = [];
+    for (const r of rows.filter(r => kanbanCards.includes(r.chatId) || (r.timestamp && (now - r.timestamp) < 86400 * 7))) {
+        const contact = await db.prepare("SELECT name FROM whatsapp_contacts WHERE contact_id = ?").get(r.chatId);
+        const last = await lastMessageFromDb(db, r.chatId);
+        out.push({
+            id: r.chatId,
+            name: (contact && contact.name) || r.chatId,
+            unreadCount: 0, // sem o Store ao vivo não dá para saber com precisão
+            timestamp: r.timestamp,
+            isGroup: false,
+            profilePicUrl: null,
+            lastMessage: last.lastMessage,
+            lastMessageFromMe: last.lastMessageFromMe,
+        });
+    }
+    out.sort((a, b) => b.timestamp - a.timestamp);
+    return out;
+};
+
+const chatsLive = async (wrapper, db, kanbanCards) => {
+    const chats = await wrapper.client.getChats();
+    const now = Date.now() / 1000;
+    const filtered = chats.filter(c => !c.isGroup).filter(c => {
+        if (kanbanCards.includes(c.id._serialized)) return true;
+        if (c.unreadCount > 0) return true;
+        if (c.timestamp && (now - c.timestamp) < 86400 * 7) return true;
+        return false;
+    });
+    const out = [];
+    for (const c of filtered) {
+        const chatId = c.id._serialized;
+        const last = await lastMessageFromDb(db, chatId);
+        out.push({
+            id: chatId,
+            name: c.name || c.id.user,
+            unreadCount: c.unreadCount,
+            timestamp: c.timestamp,
+            isGroup: c.isGroup,
+            profilePicUrl: null,
+            lastMessage: last.lastMessage,
+            lastMessageFromMe: last.lastMessageFromMe,
+        });
+    }
+    out.sort((a, b) => b.timestamp - a.timestamp);
+    return out;
+};
+
+const chatsLiveCached = (key, wrapper, db, kanbanCards) => {
+    const c = chatsCache.get(key);
+    if (c?.data && Date.now() - c.at < CHATS_TTL_MS) return Promise.resolve(c.data);
+    if (c?.pending) return c.pending;
+    const pending = chatsLive(wrapper, db, kanbanCards)
+        .then((data) => { chatsCache.set(key, { at: Date.now(), data, pending: null }); return data; })
+        .catch((e) => { chatsCache.set(key, { at: c?.at || 0, data: c?.data || null, pending: null }); throw e; });
+    chatsCache.set(key, { at: c?.at || 0, data: c?.data || null, pending });
+    if (chatsCache.size > 20) chatsCache.delete(chatsCache.keys().next().value);
+    return pending;
+};
+
 router.get('/whatsapp/chats', authenticateToken, async (req, res) => {
     try {
         const wrapper = getWaClientWrapper(req.user);
         if (!wrapper || wrapper.status !== 'connected') return res.status(400).json({error: 'Not connected'});
-        
+
         const db = getDb(req.user);
         let kanbanCards = [];
         try {
@@ -467,45 +564,12 @@ router.get('/whatsapp/chats', authenticateToken, async (req, res) => {
                 kanbanCards = (settings.waKanban?.cards || []).map(c => c.id);
             }
         } catch(e) {}
-        
+
+        // sessão recém-pareada: só o banco local
+        if (isSettling(wrapper)) return res.json(await chatsFromDb(db, kanbanCards));
+
         try {
-            const chats = await wrapper.client.getChats();
-            const now = Date.now() / 1000;
-            const filteredChats = chats.filter(c => !c.isGroup).filter(c => {
-                if (kanbanCards.includes(c.id._serialized)) return true;
-                if (c.unreadCount > 0) return true;
-                if (c.timestamp && (now - c.timestamp) < 86400 * 7) return true;
-                return false;
-            });
-
-            const simplifiedChats = [];
-            for (const c of filteredChats) {
-                const chatId = c.id._serialized;
-                let msgBody = '';
-                let msgFromMe = false;
-                try {
-                    const lastMsg = await db.prepare("SELECT body, fromMe, hasMedia FROM whatsapp_messages WHERE chatId = ? ORDER BY timestamp DESC LIMIT 1").get(chatId);
-                    if (lastMsg) {
-                        msgBody = lastMsg.body || (lastMsg.hasMedia ? '[Mídia]' : '');
-                        msgFromMe = !!lastMsg.fromMe;
-                    }
-                } catch (e) {}
-
-                simplifiedChats.push({
-                    id: chatId,
-                    name: c.name || c.id.user,
-                    unreadCount: c.unreadCount,
-                    timestamp: c.timestamp,
-                    isGroup: c.isGroup,
-                    profilePicUrl: null,
-                    lastMessage: msgBody,
-                    lastMessageFromMe: msgFromMe
-                });
-            }
-            
-            simplifiedChats.sort((a, b) => b.timestamp - a.timestamp);
-
-            res.json(simplifiedChats);
+            res.json(await chatsLiveCached(`${req.user}:${wrapper.readyAt || 0}`, wrapper, db, kanbanCards));
         } catch(e) {
             // "Evaluation failed: ..." é a assinatura clássica de o WhatsApp Web ter
             // atualizado seu front-end e o whatsapp-web.js não conseguir mais localizar
@@ -513,38 +577,10 @@ router.get('/whatsapp/chats', authenticateToken, async (req, res) => {
             // completa aqui porque o front só recebe uma mensagem minificada e curta.
             log(`[WhatsApp Chats] Falha ao buscar chats via client.getChats() para ${req.user}`, e);
 
-            // FALLBACK: monta a lista de conversas a partir do banco local, que é
-            // alimentado pelos eventos 'message'/'message_create' (mecanismo diferente
-            // do getChats(), não depende do Store injetado via evaluate e por isso
-            // continua funcionando mesmo quando getChats() quebra).
+            // FALLBACK: lista a partir do banco local, que é alimentado pelos eventos
+            // 'message'/'message_create' e não depende do Store injetado.
             try {
-                const now = Date.now() / 1000;
-                const rows = await db.prepare(`
-                    SELECT chatId,
-                           MAX(timestamp) as timestamp,
-                           COUNT(*) as totalMsgs
-                    FROM whatsapp_messages
-                    WHERE chatId NOT LIKE '%@g.us'
-                    GROUP BY chatId
-                `).all();
-
-                const fallbackChats = [];
-                for (const r of rows.filter(r => kanbanCards.includes(r.chatId) || (r.timestamp && (now - r.timestamp) < 86400 * 7))) {
-                    const contact = await db.prepare("SELECT name FROM whatsapp_contacts WHERE contact_id = ?").get(r.chatId);
-                    const lastMsg = await db.prepare("SELECT body, fromMe, hasMedia FROM whatsapp_messages WHERE chatId = ? ORDER BY timestamp DESC LIMIT 1").get(r.chatId);
-                    fallbackChats.push({
-                        id: r.chatId,
-                        name: (contact && contact.name) || r.chatId,
-                        unreadCount: 0, // não é possível saber com precisão sem o Store ao vivo
-                        timestamp: r.timestamp,
-                        isGroup: false,
-                        profilePicUrl: null,
-                        lastMessage: lastMsg ? (lastMsg.body || (lastMsg.hasMedia ? '[Mídia]' : '')) : '',
-                        lastMessageFromMe: !!(lastMsg && lastMsg.fromMe)
-                    });
-                }
-                fallbackChats.sort((a, b) => b.timestamp - a.timestamp);
-
+                const fallbackChats = await chatsFromDb(db, kanbanCards);
                 log(`[WhatsApp Chats] Fallback via banco local usado: ${fallbackChats.length} chats (client.getChats() indisponível: ${e.message}).`);
                 return res.json(fallbackChats);
             } catch (dbErr) {

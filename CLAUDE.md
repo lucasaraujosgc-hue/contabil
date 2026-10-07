@@ -183,6 +183,50 @@ de migration — `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF N
   - `sent_logs.sentAt` é **TEXT** — gravar ISO string por parâmetro, nunca
     `datetime('now')`/`now()` (o Postgres recusa timestamptz → text).
 
+## WhatsApp: sessão, logout espontâneo e diagnóstico
+
+Estudado em out/2026 lendo o código do próprio WhatsApp Web (os bundles são
+minificados mas os nomes de módulo sobrevivem; `window.require('__debug').modulesMap`
+dá acesso às fábricas). **Não chute a causa de um LOGOUT — leia o log.**
+
+- **`?post_logout=1&logout_reason=N`** vem de `WAWebLogoutReasonConstants`:
+  `0` CLIENT_FATAL (armazenamento/IndexedDB), `1` **SYNC_FAIL**, `2` timeout do
+  histórico inicial, `3` conta bloqueada. Sem `logout_reason` = logout pelo
+  usuário/celular, aparelho desconhecido, inconsistência LID/PN etc.
+- **Código `1`** só nasce de: erro fatal de *syncd* (`WAWebSyncdFatal`), timeout de
+  **180 s** da sincronização crítica no pareamento, ou falha ao sincronizar
+  privacidade (ambos em `WAWebSyncBootstrap`). Os dois últimos acontecem **antes**
+  do `ready`.
+- A lib emite `authenticated` + `ready` a **cada** mudança de `Socket.hasSynced`,
+  sem olhar o valor. No logout o WhatsApp Web zera `hasSynced` → chega um `ready`
+  **espúrio** que é o *início* do logout; erros de `getChats` logo depois (`t`,
+  `r`) são consequência, não causa. O handler confere o valor real.
+- O WhatsApp Web **não escreve o motivo no console**: escreve no logger interno.
+  `server/services/waLogTap.js` embrulha `WAWebLoggerImpl.Logger.logImpl` (só
+  observa) e traz as linhas para um rastro em memória, despejado no log quando a
+  sessão cai (`[WhatsApp Diag]`); erros saem na hora (`[WhatsApp Web ERRO]`).
+  Nível 1 (tráfego bruto, com corpo de mensagem) **nunca** é encaminhado.
+- **Ler não pode ter efeito colateral na sessão.** `client.getChatById(id)` **cria**
+  a conversa no WhatsApp Web quando ela não existe (`findOrCreateLatestChat`) e
+  `chat.fetchMessages()` puxa histórico sob demanda. Nenhum caminho **automático**
+  (carga do Kanban, `chat-info`, `ready`) pode chamá-los — última mensagem vem do
+  nosso banco. Ficam só em ações explícitas (carregar histórico / carregar número).
+- **Acomodação pós-pareamento** (`isSettling`, `WA_SETTLE_MINUTES`, padrão 10): em
+  pareamento novo, consultas automáticas ao WhatsApp usam o banco local e as
+  ações de histórico devolvem 409. Enviar/receber não muda. Motivo: trabalho do
+  app sobre o armazenamento logo após parear derruba sessão nova (o projeto
+  OpenWA isolou isso por A/B; um cliente mínimo, na mesma conta, sobrevive).
+- `GET /whatsapp/chats` tem cache de 30 s e deduplica chamadas simultâneas:
+  `getChats()` serializa todos os chats e consulta metadados de cada grupo, e o
+  frontend o chama a cada mensagem de chat fora da lista.
+- `safeSendMessage` envia para o **mesmo** id da conversa. Não converta
+  `@lid` ↔ `@c.us` na hora de enviar: o WhatsApp Web tem motivos de logout
+  explícitos para inconsistência de thread LID/PN (`LidMigrationSplitThreadMismatch`
+  e afins). Uma conversão dessas chegou a existir por diagnóstico errado (a falha
+  de mídia era o `__x_id`, corrigido no patch) e foi removida.
+- `scripts/patch-wwebjs.mjs` (postinstall) aplica correções do upstream ainda sem
+  release. Um processo por sessão: batimento em `DATA_DIR/instances`.
+
 ## Comandos
 
 ```bash

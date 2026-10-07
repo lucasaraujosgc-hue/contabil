@@ -534,6 +534,11 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           const result = await res.json();
+          if (result.settling) {
+            // WhatsApp recém-conectado: o servidor recusa leitura de histórico por alguns minutos
+            alert(result.error);
+            return;
+          }
           if (result.success) {
             successCount++;
             setHistoryLoaded(prev => ({ ...prev, [chatId]: true }));
@@ -587,8 +592,8 @@ const Dashboard: React.FC<Props> = ({ userSettings, onSaveSettings }) => {
                   }, ...prev];
               });
           }
-      } catch (e) {
-          alert('Erro ao carregar contato');
+      } catch (e: any) {
+          alert(e?.message || 'Erro ao carregar contato');
       } finally {
           setLoading(false);
           setContactNumber('');

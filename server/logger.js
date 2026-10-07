@@ -12,7 +12,9 @@ export const log = (message, error = null) => {
     }
 
     const logMessage = `[${timestamp}] ${message}${errorDetail}\n`;
-    console.log(`[APP] ${message}`);
+    // hora (UTC) também no console: o painel do EasyPanel mostra só o stdout, e sem
+    // horário não dá para medir o tempo entre eventos (ex.: pareamento -> queda).
+    console.log(`[APP] ${timestamp.slice(11, 19)} ${message}`);
     if (error) console.error(error);
 
     try {
