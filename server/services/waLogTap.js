@@ -34,21 +34,35 @@ export function waLogTapInPage(marker) {
         // avisos de inicialização que se repetem às dezenas e não dizem nada
         const NOISE = /^\[abprops\] config accessed before init|^userPrefs: Me has not loaded yet/;
         const URLS = /https:\/\/static\.whatsapp\.net\/\S+/g;
+        // Linhas decisivas: furam o teto por minuto (a sincronização de histórico é
+        // tagarela e estoura o teto justamente quando a sessão cai).
+        const PRIORITY = /fatal|logging out|logged out|timeout exceeded|logout|clearState/i;
+        // O WhatsApp Web já está encerrando a sessão: daqui em diante são centenas de
+        // erros por segundo (leituras de banco abortadas) que só enterram a causa.
+        const LOGOUT_START = /DbOnLogoutAbort|ws2:clearState/;
+        let stopped = false;
         let winStart = Date.now();
         let used = 0;
         L.logImpl = function (level, msg, err) {
             try {
-                if (level >= 3 || (level === 2 && RE.test(msg))) {
+                if (!stopped && (level >= 3 || (level === 2 && RE.test(msg)))) {
                     const text = String(msg);
-                    if (!NOISE.test(text)) {
+                    if (LOGOUT_START.test(text)) {
+                        stopped = true; // encaminha esta última linha e para
+                        console.debug(marker + level + '|' + text.split('\n')[0].slice(0, 700));
+                    } else if (!NOISE.test(text)) {
                         const now = Date.now();
                         if (now - winStart > 60000) { winStart = now; used = 0; }
-                        // WARN/ERROR sempre; LOG com teto por minuto para não inundar
-                        if (level >= 3 || used++ < 300) {
+                        // WARN/ERROR e linhas decisivas sempre; demais LOG com teto por minuto
+                        if (level >= 3 || PRIORITY.test(text) || used++ < 300) {
                             // só a mensagem: a stack (URLs gigantes dos bundles) não ajuda.
                             // Em ERRO mantém as 3 primeiras linhas, com as URLs encurtadas.
                             let line = text.split('\n').slice(0, level >= 4 ? 3 : 1).join(' | ').replace(URLS, '<wa.js>').slice(0, 700);
-                            if (err && err.message && !line.includes(err.message)) line += ' | err=' + String(err.message).slice(0, 240);
+                            // "created for stack trace" é um erro sintético que o WhatsApp cria só
+                            // para ter stack — não é informação.
+                            if (err && err.message && err.message !== 'created for stack trace' && !line.includes(err.message)) {
+                                line += ' | err=' + String(err.message).slice(0, 240);
+                            }
                             console.debug(marker + level + '|' + line);
                         }
                     }

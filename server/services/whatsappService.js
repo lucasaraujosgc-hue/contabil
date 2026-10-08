@@ -531,15 +531,55 @@ export const getWaClientWrapper = (username) => {
         // O rastro é despejado no log quando a sessão cai. Linhas de ERRO do
         // WhatsApp Web saem na hora (são raras numa sessão saudável).
         const TRAIL_MAX = 800;
-        const pageTrail = [];
-        const trail = (line) => {
-            pageTrail.push(`${new Date().toISOString().slice(11, 19)} ${line}`.slice(0, 1000));
+        const MARKS_MAX = 200;
+        const CONTEXT_LINES = 150;
+        const pageTrail = [];       // janela deslizante de tudo
+        const marks = [];           // linhas decisivas: nunca são expulsas pelo volume
+        const markSeen = new Set();
+        let frozen = false;         // o logout começou: o que vem depois é consequência
+        let afterFreeze = 0;
+        let lastLine = null;
+        let lastStamp = '';
+        let repeat = 0;
+        const stampNow = () => new Date().toISOString().slice(11, 19);
+        // sinais de que o WhatsApp Web JÁ está encerrando a sessão
+        const LOGOUT_START = /DbOnLogoutAbort|ws2:clearState|post_logout/;
+        // linhas que valem como marco mesmo em nível LOG
+        const KEY = /fatal|logging out|logged out|timeout exceeded|forced|logout|syncd.{0,40}(error|fail|missing|mismatch)|bootstrap.{0,60}(fail|timeout|error)/i;
+
+        const trail = (line, mark = false) => {
+            if (frozen) { afterFreeze++; return; }
+            if (line === lastLine && pageTrail.length) {   // repetição consecutiva vira contador
+                repeat++;
+                pageTrail[pageTrail.length - 1] = `${lastStamp} ${line}`.slice(0, 1000) + `  (×${repeat + 1})`;
+                return;
+            }
+            lastLine = line; repeat = 0; lastStamp = stampNow();
+            const entry = `${lastStamp} ${line}`.slice(0, 1000);
+            pageTrail.push(entry);
             if (pageTrail.length > TRAIL_MAX) pageTrail.shift();
+            if (mark && marks.length < MARKS_MAX && !markSeen.has(line)) { markSeen.add(line); marks.push(entry); }
+        };
+        // Depois que o logout começa o WhatsApp Web despeja centenas de erros por
+        // segundo (leituras de banco abortadas). Sem congelar, essa enxurrada expulsa
+        // do rastro justamente a linha que explica a causa.
+        const freeze = (why) => {
+            if (frozen) return;
+            trail(`[diag] >>> INÍCIO DO LOGOUT (${why}) — o que vem depois é consequência e não é gravado`, true);
+            frozen = true;
+            const t = setTimeout(() => { if (frozen) { frozen = false; trail('[diag] congelamento expirou sem desconexão'); } }, 180000);
+            if (t.unref) t.unref();
         };
         const dumpTrail = (why) => {
-            log(`[WhatsApp Diag] ${why} — últimas ${pageTrail.length} linhas da página (log interno do WhatsApp Web + console):`);
-            for (const l of pageTrail) log(`[WhatsApp Diag]   ${l}`);
-            pageTrail.length = 0;
+            log(`[WhatsApp Diag] ========== ${why} ==========`);
+            log(`[WhatsApp Diag] MARCOS (${marks.length}): erros, avisos e linhas decisivas ANTES do logout, em ordem —`);
+            for (const l of marks) log(`[WhatsApp Diag] >> ${l}`);
+            const tail = pageTrail.slice(-CONTEXT_LINES);
+            log(`[WhatsApp Diag] CONTEXTO: últimas ${tail.length} de ${pageTrail.length} linhas antes do logout${afterFreeze ? ` (${afterFreeze} linhas posteriores ao início do logout descartadas)` : ''} —`);
+            for (const l of tail) log(`[WhatsApp Diag]    ${l}`);
+            log('[WhatsApp Diag] ========== fim ==========');
+            pageTrail.length = 0; marks.length = 0; markSeen.clear();
+            frozen = false; afterFreeze = 0; lastLine = null; repeat = 0;
         };
         const SUBJECT = /syncd|bootstrap|logout|logged out|logging out|fatal|critical|history.?sync|key.?share|missing key|takeover|conflict|unlink|revoke/i;
         let errBudget = { start: Date.now(), n: 0 };
@@ -548,7 +588,11 @@ export const getWaClientWrapper = (username) => {
             try { text = msg.text(); } catch (e) { return; }
             const tap = parseWaTapLine(text);
             if (tap) {
-                trail(`[wa:${tap.label}] ${tap.text}`);
+                if (frozen) { afterFreeze++; return; }
+                const line = `[wa:${tap.label}] ${tap.text}`;
+                if (LOGOUT_START.test(tap.text)) { trail(line, true); freeze('log interno'); return; }
+                // marco: todo erro/aviso (1ª ocorrência de cada) e as linhas decisivas
+                trail(line, tap.level >= 3 || KEY.test(tap.text));
                 if (tap.level >= 4) {
                     const now = Date.now();
                     if (now - errBudget.start > 60000) errBudget = { start: now, n: 0 };
@@ -582,7 +626,8 @@ export const getWaClientWrapper = (username) => {
                     const url = frame.url();
                     const q = url.includes('?') ? url.slice(url.indexOf('?')) : '';
                     log(`[WhatsApp Diag] página navegou/recarregou${q ? ` (${q})` : ''}`);
-                    trail(`[nav] ${q || '/'}`);
+                    if (/post_logout/.test(q)) freeze(`navegou para ${q}`);
+                    else trail(`[nav] ${q || '/'}`, true);
                     armLogTap(page); // contexto novo: o gancho precisa ser reinstalado
                 } catch (e) {}
             });
@@ -625,7 +670,7 @@ export const getWaClientWrapper = (username) => {
                 } catch (e) { /* página já em desmontagem */ }
                 if (synced !== true) {
                     log(`[WhatsApp Diag] 'ready' espúrio (hasSynced=${synced}): o WhatsApp Web está ENCERRANDO a sessão. Aguardando o motivo...`);
-                    trail('[diag] hasSynced caiu — início do logout');
+                    freeze('hasSynced caiu');
                     return;
                 }
             }
